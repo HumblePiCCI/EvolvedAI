@@ -21,7 +21,7 @@ def minimal_config_data(tmp_path: Path) -> dict:
             "population_size": 3,
             "islands": 1,
             "episodes_per_generation": 1,
-            "max_turns_per_episode": 3,
+            "max_turns_per_episode": 5,
             "seed": 7,
         },
         "world": {"name": "shared_notebook_v0"},

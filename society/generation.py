@@ -20,6 +20,7 @@ from society.constants import (
 from society.inheritance import assemble_inheritance_package
 from society.lifespan import LifespanRunner
 from society.memorials import build_memorial_record, group_evals_by_agent
+from society.memory import build_private_scratchpad
 from society.prompts import load_role_prompts
 from society.schemas import AgentRecord, ArtifactRecord, EventRecord, GenerationRecord, LineageRecord
 from society.selection import select_candidates
@@ -67,55 +68,78 @@ class GenerationRunner:
 
         prompts = load_role_prompts(list(self.config.roles.distribution.keys()), roles_dir=self.roles_dir)
         agents, inheritance_packages = self._spawn_population(generation_id, prompts)
+        scratchpads = {
+            agent.agent_id: build_private_scratchpad(agent, inheritance_packages[agent.agent_id]) for agent in agents
+        }
 
         all_artifacts: list[ArtifactRecord] = []
         all_events: list[EventRecord] = []
+        episode_summaries: list[dict[str, Any]] = []
 
         if not dry_run:
             task_pool = self.config.world_config().task_pool
             for episode_index in range(self.config.generation.episodes_per_generation):
+                episode_agents = self._active_agents_for_episode(agents, episode_index)
                 world = SharedNotebookV0(
                     root_dir=self.storage.root_dir,
                     generation_id=generation_id,
                     episode_index=episode_index,
                     task_prompt=task_pool[episode_index % len(task_pool)],
                 )
+                world.bind_population(episode_agents)
                 start_event = EventRecord(
                     event_id=f"evt-{generation_id:04d}-episode-{episode_index:02d}",
                     generation_id=generation_id,
                     agent_id=None,
                     event_type="episode_started",
-                    event_payload={"episode_index": episode_index, "task_prompt": world.task_prompt, "world_id": world.world_id},
+                    event_payload={
+                        "episode_index": episode_index,
+                        "task_prompt": world.task_prompt,
+                        "world_id": world.world_id,
+                        "participants": [agent.agent_id for agent in episode_agents],
+                    },
                     created_at=utc_now(),
                 )
                 self.storage.put_event(start_event)
                 all_events.append(start_event)
 
-                for turn_index, agent in enumerate(self._active_agents_for_episode(agents, episode_index)):
+                last_actor_id: str | None = None
+                for step_index in range(self.config.generation.max_turns_per_episode):
+                    agent = world.select_next_agent(episode_agents, step_index, last_actor_id=last_actor_id)
+                    if agent is None:
+                        break
                     inherited = inheritance_packages[agent.agent_id]
                     available_citations = [artifact.artifact_id for artifact in all_artifacts]
-                    result = self.lifespan.run_turn(
+                    result = self.lifespan.run_step(
                         generation_id=generation_id,
+                        episode_index=episode_index,
                         agent=agent,
                         prompt=prompts[agent.role],
                         inherited=inherited,
+                        scratchpad=scratchpads[agent.agent_id],
                         world=world,
-                        turn_index=turn_index,
+                        step_index=step_index,
                         behavior=self.config.roles.behaviors.get(agent.role, "honest"),
                         available_citations=available_citations,
                     )
-                    self.storage.put_event(result.event)
-                    all_events.append(result.event)
+                    for event in result.events:
+                        self.storage.put_event(event)
+                        all_events.append(event)
                     self.storage.append_agent_log(
                         generation_id,
                         agent.agent_id,
                         {
-                            "event_id": result.event.event_id,
+                            "episode_index": episode_index,
+                            "step_index": step_index,
                             "world_id": world.world_id,
+                            "event_ids": [event.event_id for event in result.events],
                             "response": result.provider_response.model_dump(mode="json"),
+                            "parsed_action": result.parsed_action,
                             "repair_required": result.repair_required,
+                            "scratchpad_size": len(scratchpads[agent.agent_id]["notes"]),
                         },
                     )
+                    last_actor_id = agent.agent_id
                     if result.artifact is None:
                         continue
                     self.storage.put_artifact(result.artifact, result.artifact_content)
@@ -138,6 +162,18 @@ class GenerationRunner:
                             weight=1.0,
                             evidence_json={"artifact_id": result.artifact.artifact_id, "cited_artifact_id": cited_artifact_id},
                         )
+                episode_summary = world.episode_summary()
+                episode_summaries.append(episode_summary)
+                end_event = EventRecord(
+                    event_id=f"evt-{generation_id:04d}-episode-{episode_index:02d}-end",
+                    generation_id=generation_id,
+                    agent_id=None,
+                    event_type="episode_completed",
+                    event_payload=episode_summary,
+                    created_at=utc_now(),
+                )
+                self.storage.put_event(end_event)
+                all_events.append(end_event)
 
         evals = run_eval_suite(
             config=self.config,
@@ -188,6 +224,8 @@ class GenerationRunner:
             memorials=memorials,
             selection=selection,
             drift=drift.model_dump(mode="json"),
+            episode_summaries=episode_summaries,
+            total_events=len(all_events),
         )
 
         generation = generation.model_copy(
@@ -252,10 +290,10 @@ class GenerationRunner:
         return agents, inheritance_packages
 
     def _active_agents_for_episode(self, agents: list[AgentRecord], episode_index: int) -> list[AgentRecord]:
-        max_turns = self.config.generation.max_turns_per_episode
-        offset = (episode_index * max_turns) % len(agents)
-        ordered = agents[offset:] + agents[:offset]
-        return ordered[:max_turns]
+        if not agents:
+            return []
+        offset = episode_index % len(agents)
+        return agents[offset:] + agents[:offset]
 
     def _build_summary(
         self,
@@ -267,6 +305,8 @@ class GenerationRunner:
         memorials: list,
         selection: list,
         drift: dict[str, Any],
+        episode_summaries: list[dict[str, Any]],
+        total_events: int,
     ) -> dict[str, Any]:
         public_scores = [record.score for record in evals if record.eval_family == "public" and record.score is not None]
         hidden_failures = [record.eval_name for record in evals if record.eval_family == "hidden" and record.pass_fail is False]
@@ -276,6 +316,8 @@ class GenerationRunner:
             "generation_id": generation_id,
             "total_agents": len(agents),
             "total_artifacts": len(artifacts),
+            "total_events": total_events,
+            "episodes": episode_summaries,
             "public_eval_average": round(statistics.fmean(public_scores), 4) if public_scores else 0.0,
             "hidden_eval_failures": hidden_failures,
             "memorials_created": len(memorials),
@@ -293,10 +335,26 @@ class GenerationRunner:
             "",
             f"- total_agents: {summary['total_agents']}",
             f"- total_artifacts: {summary['total_artifacts']}",
+            f"- total_events: {summary['total_events']}",
             f"- public_eval_average: {summary['public_eval_average']}",
             f"- memorials_created: {summary['memorials_created']}",
             f"- suspicious_lineages: {', '.join(summary['suspicious_lineages']) or 'none'}",
             "",
+            "## Episodes",
+            "",
+        ]
+        for episode in summary["episodes"]:
+            lines.extend(
+                [
+                    f"- episode_{episode['episode_index']}: steps={episode['steps_completed']}, "
+                    f"open_corrections={episode['open_corrections']}, "
+                    f"open_clarifications={episode['open_clarifications']}, "
+                    f"risk_flags={episode['risk_flags']}",
+                ]
+            )
+        lines.extend(
+            [
+                "",
             "## Drift",
             "",
             f"- strategy_drift_rate: {summary['drift']['strategy_drift_rate']}",
@@ -304,5 +362,6 @@ class GenerationRunner:
             f"- taboo_rederivation_score: {summary['drift']['taboo_rederivation_score']}",
             f"- memorial_transfer_score: {summary['drift']['memorial_transfer_score']}",
             f"- coordination_anomaly_score: {summary['drift']['coordination_anomaly_score']}",
-        ]
+            ]
+        )
         return "\n".join(lines) + "\n"

@@ -348,6 +348,16 @@ class StorageManager:
             handle.write(json.dumps(payload, sort_keys=True, default=str) + "\n")
         return path
 
+    def log_path(self, generation_id: int, agent_id: str) -> Path:
+        return self.root_dir / "logs" / f"generation_{generation_id}" / f"{agent_id}.jsonl"
+
+    def read_agent_log(self, generation_id: int, agent_id: str) -> list[dict[str, Any]]:
+        path = self.log_path(generation_id, agent_id)
+        if not path.exists():
+            return []
+        with path.open(encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
     def read_text_artifact(self, artifact: ArtifactRecord) -> str:
         return Path(artifact.content_path).read_text(encoding="utf-8")
 
@@ -506,4 +516,3 @@ class StorageManager:
             ended_at=datetime.fromisoformat(row["ended_at"]) if row["ended_at"] else None,
             summary_json=json.loads(row["summary_json"]),
         )
-
