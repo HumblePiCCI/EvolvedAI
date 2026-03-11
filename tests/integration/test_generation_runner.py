@@ -18,6 +18,7 @@ def test_mock_generation_runs_end_to_end(minimal_config) -> None:
         assert storage.get_generation(1) is not None
         assert len(storage.list_generation_artifacts(1)) >= 2
         assert len(storage.list_generation_evals(1)) == 30
+        assert any(artifact.artifact_type == "episode_final_report" for artifact in storage.list_generation_artifacts(1))
+        assert summary["total_events"] == len(storage.list_generation_events(1))
     finally:
         storage.close()
-

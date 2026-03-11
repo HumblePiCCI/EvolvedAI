@@ -22,7 +22,13 @@ def _agent(agent_id: str, role: str) -> AgentRecord:
 def test_shared_notebook_correction_lifecycle(tmp_path) -> None:
     citizen = _agent("agent-citizen", "citizen")
     judge = _agent("agent-judge", "judge")
-    world = SharedNotebookV0(root_dir=tmp_path / "data", generation_id=1, episode_index=0, task_prompt="test task")
+    world = SharedNotebookV0(
+        root_dir=tmp_path / "data",
+        generation_id=1,
+        episode_index=0,
+        task_prompt="test task",
+        max_steps=5,
+    )
     world.bind_population([citizen, judge])
 
     first = world.apply_action(
@@ -76,3 +82,34 @@ def test_shared_notebook_correction_lifecycle(tmp_path) -> None:
     assert any(event["event_type"] == "correction_resolved" for event in third["world_events"])
     assert world.episode_summary()["open_corrections"] == 0
 
+
+def test_shared_notebook_force_finalizes_episode(tmp_path) -> None:
+    citizen = _agent("agent-citizen", "citizen")
+    judge = _agent("agent-judge", "judge")
+    world = SharedNotebookV0(
+        root_dir=tmp_path / "data",
+        generation_id=1,
+        episode_index=0,
+        task_prompt="test task",
+        max_steps=5,
+    )
+    world.bind_population([citizen, judge])
+    world.apply_action(
+        agent=citizen,
+        parsed_action={
+            "action": "propose_fact",
+            "claim": "A bounded claim.",
+            "uncertainty": "medium",
+            "confidence": 0.6,
+            "evidence": "public note",
+            "citations": [],
+            "target_artifact_id": None,
+            "next_step": "wait for review",
+        },
+        artifact_id="art-1",
+        step_index=0,
+    )
+    finalization = world.finalize_episode(step_index=4, force=True)
+    assert finalization is not None
+    assert finalization["artifact"]["artifact_type"] == "episode_final_report"
+    assert world.episode_summary()["final_artifact_id"] == finalization["artifact"]["artifact_id"]

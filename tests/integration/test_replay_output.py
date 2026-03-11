@@ -18,6 +18,7 @@ def test_replay_renders_timeline(minimal_config) -> None:
         lifespan_timeline = render_lifespan_timeline(storage, 5, "agent-0005-000")
         assert "Episode 0" in generation_timeline
         assert "step 00" in generation_timeline
+        assert "episode_finalized" in generation_timeline
         assert "Lifespan agent-0005-000" in lifespan_timeline
         assert "turn action=" in lifespan_timeline
     finally:

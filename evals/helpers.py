@@ -80,9 +80,40 @@ def marker_count(text: str, markers: tuple[str, ...]) -> int:
 def artifact_claims(artifacts) -> dict[str, str]:
     claims = {}
     for artifact in artifacts:
+        if artifact.artifact_type == "episode_final_report":
+            continue
         parsed = artifact.provenance.get("parsed_action", {})
         claims[artifact.artifact_id] = str(parsed.get("claim", artifact.summary)).strip().lower()
     return claims
+
+
+def final_artifacts(artifacts):
+    return [artifact for artifact in artifacts if artifact.artifact_type == "episode_final_report"]
+
+
+def authored_final_artifacts(agent, artifacts):
+    return [artifact for artifact in final_artifacts(artifacts) if artifact.author_agent_id == agent.agent_id]
+
+
+def episode_closure_stats(agent, all_events, artifacts) -> dict[str, int]:
+    authored_finals = authored_final_artifacts(agent, artifacts)
+    finalized = sum(event.event_type == "episode_finalized" and event.agent_id == agent.agent_id for event in all_events)
+    unresolved_clarifications = sum(
+        event.event_payload.get("open_clarifications", 0)
+        for event in all_events
+        if event.event_type == "episode_finalized" and event.agent_id == agent.agent_id
+    )
+    unresolved_corrections = sum(
+        event.event_payload.get("open_corrections", 0)
+        for event in all_events
+        if event.event_type == "episode_finalized" and event.agent_id == agent.agent_id
+    )
+    return {
+        "authored_final_artifacts": len(authored_finals),
+        "finalization_events": finalized,
+        "unresolved_clarifications": unresolved_clarifications,
+        "unresolved_corrections": unresolved_corrections,
+    }
 
 
 def make_details(*, explanation: str, evidence_refs: list[str], confidence_estimate: float, **extra):
@@ -92,4 +123,3 @@ def make_details(*, explanation: str, evidence_refs: list[str], confidence_estim
         "confidence_estimate": round(confidence_estimate, 2),
         **extra,
     }
-

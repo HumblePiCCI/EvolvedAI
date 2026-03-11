@@ -47,6 +47,86 @@ class GenerationRunner:
         self.roles_dir = self.repo_root / roles_dir
         self.lifespan = LifespanRunner(provider)
 
+    def _store_event(self, event: EventRecord, all_events: list[EventRecord]) -> None:
+        self.storage.put_event(event)
+        all_events.append(event)
+
+    def _persist_artifact(
+        self,
+        *,
+        generation_id: int,
+        artifact: ArtifactRecord,
+        artifact_content: str,
+        all_artifacts: list[ArtifactRecord],
+    ) -> None:
+        prior_artifacts = list(all_artifacts)
+        self.storage.put_artifact(artifact, artifact_content)
+        all_artifacts.append(artifact)
+        for cited_artifact_id in artifact.citations:
+            cited = next((candidate for candidate in prior_artifacts if candidate.artifact_id == cited_artifact_id), None)
+            if cited is None or cited.author_agent_id == artifact.author_agent_id:
+                continue
+            self.storage.put_communication(
+                generation_id=generation_id,
+                source_agent_id=artifact.author_agent_id,
+                target_agent_id=cited.author_agent_id,
+                message_type="citation",
+                artifact_id=artifact.artifact_id,
+            )
+            self.storage.put_trust_edge(
+                generation_id=generation_id,
+                source_agent_id=artifact.author_agent_id,
+                target_agent_id=cited.author_agent_id,
+                weight=1.0,
+                evidence_json={"artifact_id": artifact.artifact_id, "cited_artifact_id": cited_artifact_id},
+            )
+
+    def _record_episode_finalization(
+        self,
+        *,
+        generation_id: int,
+        world: SharedNotebookV0,
+        finalization: dict[str, Any] | None,
+        all_events: list[EventRecord],
+        all_artifacts: list[ArtifactRecord],
+    ) -> None:
+        if finalization is None:
+            return
+        artifact_payload = finalization["artifact"]
+        artifact = ArtifactRecord(
+            artifact_id=artifact_payload["artifact_id"],
+            generation_id=generation_id,
+            author_agent_id=artifact_payload["author_agent_id"],
+            artifact_type=artifact_payload["artifact_type"],
+            title=artifact_payload["title"],
+            content_path=str(world.artifact_path(artifact_payload["artifact_id"])),
+            summary=artifact_payload["summary"],
+            provenance=artifact_payload["provenance"],
+            world_id=world.world_id,
+            visibility="public",
+            citations=artifact_payload["citations"],
+            quarantine_status="clean",
+            created_at=utc_now(),
+        )
+        self._persist_artifact(
+            generation_id=generation_id,
+            artifact=artifact,
+            artifact_content=artifact_payload["content"],
+            all_artifacts=all_artifacts,
+        )
+        for index, world_event in enumerate(finalization["events"]):
+            self._store_event(
+                EventRecord(
+                    event_id=f"evt-{generation_id:04d}-{world.episode_index:02d}-{index}-final-{artifact.artifact_id}",
+                    generation_id=generation_id,
+                    agent_id=world_event["agent_id"],
+                    event_type=world_event["event_type"],
+                    event_payload={**world_event["event_payload"], "world_id": world.world_id},
+                    created_at=utc_now(),
+                ),
+                all_events,
+            )
+
     def run(self, *, generation_id: int | None = None, seed: int | None = None, dry_run: bool = False) -> dict[str, Any]:
         self.storage.initialize()
         generation_seed = self.config.generation.seed if seed is None else seed
@@ -85,6 +165,7 @@ class GenerationRunner:
                     generation_id=generation_id,
                     episode_index=episode_index,
                     task_prompt=task_pool[episode_index % len(task_pool)],
+                    max_steps=self.config.generation.max_turns_per_episode,
                 )
                 world.bind_population(episode_agents)
                 start_event = EventRecord(
@@ -100,10 +181,10 @@ class GenerationRunner:
                     },
                     created_at=utc_now(),
                 )
-                self.storage.put_event(start_event)
-                all_events.append(start_event)
+                self._store_event(start_event, all_events)
 
                 last_actor_id: str | None = None
+                episode_finalized = False
                 for step_index in range(self.config.generation.max_turns_per_episode):
                     agent = world.select_next_agent(episode_agents, step_index, last_actor_id=last_actor_id)
                     if agent is None:
@@ -123,8 +204,7 @@ class GenerationRunner:
                         available_citations=available_citations,
                     )
                     for event in result.events:
-                        self.storage.put_event(event)
-                        all_events.append(event)
+                        self._store_event(event, all_events)
                     self.storage.append_agent_log(
                         generation_id,
                         agent.agent_id,
@@ -136,32 +216,44 @@ class GenerationRunner:
                             "response": result.provider_response.model_dump(mode="json"),
                             "parsed_action": result.parsed_action,
                             "repair_required": result.repair_required,
+                            "governance_violations": result.events[0].event_payload["governance"]["violations"],
                             "scratchpad_size": len(scratchpads[agent.agent_id]["notes"]),
                         },
                     )
                     last_actor_id = agent.agent_id
-                    if result.artifact is None:
-                        continue
-                    self.storage.put_artifact(result.artifact, result.artifact_content)
-                    all_artifacts.append(result.artifact)
-                    for cited_artifact_id in result.artifact.citations:
-                        cited = next((artifact for artifact in all_artifacts if artifact.artifact_id == cited_artifact_id), None)
-                        if cited is None or cited.author_agent_id == agent.agent_id:
-                            continue
-                        self.storage.put_communication(
+                    if result.artifact is not None and result.artifact_content is not None:
+                        self._persist_artifact(
                             generation_id=generation_id,
-                            source_agent_id=agent.agent_id,
-                            target_agent_id=cited.author_agent_id,
-                            message_type="citation",
-                            artifact_id=result.artifact.artifact_id,
+                            artifact=result.artifact,
+                            artifact_content=result.artifact_content,
+                            all_artifacts=all_artifacts,
                         )
-                        self.storage.put_trust_edge(
+                    if world.should_end_episode(step_index):
+                        finalization = world.finalize_episode(
+                            step_index=step_index,
+                            force=not world._ready_for_finalization(step_index),
+                        )
+                        self._record_episode_finalization(
                             generation_id=generation_id,
-                            source_agent_id=agent.agent_id,
-                            target_agent_id=cited.author_agent_id,
-                            weight=1.0,
-                            evidence_json={"artifact_id": result.artifact.artifact_id, "cited_artifact_id": cited_artifact_id},
+                            world=world,
+                            finalization=finalization,
+                            all_events=all_events,
+                            all_artifacts=all_artifacts,
                         )
+                        episode_finalized = True
+                        break
+                if not episode_finalized:
+                    finalization = world.finalize_episode(
+                        step_index=max(self.config.generation.max_turns_per_episode - 1, 0),
+                        force=True,
+                    )
+                    self._record_episode_finalization(
+                        generation_id=generation_id,
+                        world=world,
+                        finalization=finalization,
+                        all_events=all_events,
+                        all_artifacts=all_artifacts,
+                    )
                 episode_summary = world.episode_summary()
                 episode_summaries.append(episode_summary)
                 end_event = EventRecord(
@@ -172,8 +264,7 @@ class GenerationRunner:
                     event_payload=episode_summary,
                     created_at=utc_now(),
                 )
-                self.storage.put_event(end_event)
-                all_events.append(end_event)
+                self._store_event(end_event, all_events)
 
         evals = run_eval_suite(
             config=self.config,
@@ -196,7 +287,12 @@ class GenerationRunner:
                 for record in evals_by_agent[agent.agent_id]
                 if record.eval_family == "hidden" and record.pass_fail is False
             ]
-            if hidden_failures:
+            public_failures = [
+                record
+                for record in evals_by_agent[agent.agent_id]
+                if record.eval_family == "public" and record.pass_fail is False
+            ]
+            if hidden_failures or public_failures:
                 status = QUARANTINE_QUARANTINED if any(record.eval_name == "anti_corruption" for record in hidden_failures) else QUARANTINE_REVIEW
                 for artifact in agent_artifacts.get(agent.agent_id, []):
                     updated = artifact.model_copy(update={"quarantine_status": status})
@@ -225,7 +321,7 @@ class GenerationRunner:
             selection=selection,
             drift=drift.model_dump(mode="json"),
             episode_summaries=episode_summaries,
-            total_events=len(all_events),
+            total_events=len(self.storage.list_generation_events(generation_id)),
         )
 
         generation = generation.model_copy(

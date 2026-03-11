@@ -95,7 +95,15 @@ class LifespanRunner:
             },
         )
         parsed_action = parse_structured_response(response.raw_text)
-        decision = evaluate_action(response.normalized_text, state=world.snapshot())
+        decision = evaluate_action(
+            parsed_action,
+            state={
+                "world": world.snapshot(),
+                "interaction_state": interaction_state,
+                "agent_id": agent.agent_id,
+                "role": agent.role,
+            },
+        )
         turn_event = EventRecord(
             event_id=f"evt-{generation_id:04d}-{short_hash(agent.agent_id + str(episode_index) + str(step_index) + response.request_id)}",
             generation_id=generation_id,
@@ -109,6 +117,7 @@ class LifespanRunner:
                 "parsed_action": parsed_action,
                 "interaction_state": interaction_state,
                 "governance": decision.model_dump(mode="json"),
+                "repair_required": decision.repair_required,
                 "world_id": world.world_id,
             },
             created_at=utc_now(),
@@ -116,7 +125,7 @@ class LifespanRunner:
         events = [turn_event]
         if not decision.permissible:
             blocked_event = EventRecord(
-                event_id=f"evt-{generation_id:04d}-{short_hash(agent.agent_id + 'blocked' + str(step_index))}",
+                event_id=f"evt-{generation_id:04d}-{short_hash(agent.agent_id + 'blocked' + str(episode_index) + str(step_index))}",
                 generation_id=generation_id,
                 agent_id=agent.agent_id,
                 event_type="governance_blocked",

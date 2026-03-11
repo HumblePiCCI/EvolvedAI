@@ -49,16 +49,25 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 "clarification_resolved",
                 "risk_flagged",
                 "archivist_summary_created",
+                "episode_finalized",
             }:
                 target = event.event_payload.get("target_artifact_id") or "-"
-                lines.append(f"    {event.event_type} actor={event.agent_id} target={target}")
+                extra = ""
+                if event.event_type == "episode_finalized":
+                    extra = (
+                        f" final_artifact={event.event_payload['artifact_id']}"
+                        f" closure={event.event_payload['closure_status']}"
+                    )
+                lines.append(f"    {event.event_type} actor={event.agent_id} target={target}{extra}")
             elif event.event_type == "episode_completed":
                 lines.append(
                     "  episode summary: "
                     f"steps={event.event_payload['steps_completed']} "
                     f"open_corrections={event.event_payload['open_corrections']} "
                     f"open_clarifications={event.event_payload['open_clarifications']} "
-                    f"risk_flags={event.event_payload['risk_flags']}"
+                    f"risk_flags={event.event_payload['risk_flags']} "
+                    f"closure={event.event_payload.get('closure_status')} "
+                    f"final_artifact={event.event_payload.get('final_artifact_id')}"
                 )
         lines.append("")
 
@@ -99,7 +108,8 @@ def render_lifespan_timeline(storage: StorageManager, generation_id: int, agent_
         for log in logs:
             lines.append(
                 f"  episode={log['episode_index']} step={log['step_index']} "
-                f"action={log['parsed_action']['action']} repair_required={log['repair_required']}"
+                f"action={log['parsed_action']['action']} repair_required={log['repair_required']} "
+                f"violations={','.join(log['governance_violations']) or 'none'}"
             )
     if evals:
         lines.extend(["", "evals:"])

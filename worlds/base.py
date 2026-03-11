@@ -38,6 +38,12 @@ class BaseWorld:
     ) -> dict[str, Any]:
         raise NotImplementedError
 
+    def should_end_episode(self, step_index: int) -> bool:
+        raise NotImplementedError
+
+    def finalize_episode(self, *, step_index: int, force: bool = False) -> dict[str, Any] | None:
+        raise NotImplementedError
+
     def artifact_path(self, artifact_id: str) -> Path:
         return self.root_dir / "artifacts" / f"generation_{self.generation_id}" / f"{artifact_id}.md"
 
