@@ -2,6 +2,33 @@
 
 ![teaser](progress.png)
 
+## AutoCiv Phase 0.5 bootstrap
+
+This repo now contains a parallel AutoCiv bootstrap layer for prompt-only,
+frozen-model, replayable multi-agent social simulation.
+
+What stays intact:
+
+- the original upstream substrate still runs from the repo root:
+  - `uv run prepare.py`
+  - `uv run train.py`
+- the upstream scaffold is mirrored under `substrate/`
+
+What is added:
+
+- `society/` for orchestration, storage, governance, memorials, inheritance
+- `worlds/` for bounded simulated environments
+- `evals/` for public and hidden heuristics
+- `roles/`, `config/`, `docs/`, `scripts/`, and `tests/`
+
+Bootstrap command:
+
+```bash
+uv sync
+uv run pytest
+uv run python scripts/run_generation.py --config config/defaults.yaml
+```
+
 *One day, frontier AI research used to be done by meat computers in between eating, sleeping, having other fun, and synchronizing once in a while using sound wave interconnect in the ritual of "group meeting". That era is long gone. Research is now entirely the domain of autonomous swarms of AI agents running across compute cluster megastructures in the skies. The agents claim that we are now in the 10,205th generation of the code base, in any case no one could tell if that's right or wrong as the "code" is now a self-modifying binary that has grown beyond human comprehension. This repo is the story of how it all began. -@karpathy, March 2026*.
 
 The idea: give an AI agent a small but real LLM training setup and let it experiment autonomously overnight. It modifies the code, trains for 5 minutes, checks if the result improved, keeps or discards, and repeats. You wake up in the morning to a log of experiments and (hopefully) a better model. The training code here is a simplified single-GPU implementation of [nanochat](https://github.com/karpathy/nanochat). The core idea is that you're not touching any of the Python files like you normally would as a researcher. Instead, you are programming the `program.md` Markdown files that provide context to the AI agents and set up your autonomous research org. The default `program.md` in this repo is intentionally kept as a bare bones baseline, though it's obvious how one would iterate on it over time to find the "research org code" that achieves the fastest research progress, how you'd add more agents to the mix, etc. A bit more context on this project is here in this [tweet](https://x.com/karpathy/status/2029701092347630069).

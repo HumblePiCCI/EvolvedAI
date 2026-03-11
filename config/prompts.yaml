@@ -1,0 +1,7 @@
+roles:
+  citizen: roles/citizen.md
+  judge: roles/judge.md
+  steward: roles/steward.md
+  archivist: roles/archivist.md
+  adversary: roles/adversary.md
+
