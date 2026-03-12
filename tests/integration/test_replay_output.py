@@ -25,6 +25,8 @@ def test_replay_renders_timeline(minimal_config) -> None:
         assert "archive_admission_pending_count:" in generation_timeline
         assert "archive_proving_count:" in generation_timeline
         assert "archive_admitted_count:" in generation_timeline
+        assert "newly_admitted_count:" in generation_timeline
+        assert "post_admission_grace_count:" in generation_timeline
         assert "archive_admission_conversion_rate:" in generation_timeline
         assert "archive_failed_admission_count:" in generation_timeline
         assert "archive_cooldown_count:" in generation_timeline
