@@ -84,6 +84,9 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f"score={item['score']} base={item.get('base_score', item['score'])} "
                 f"diversity_bonus={item.get('diversity_bonus', 0.0)} "
                 f"cohort_similarity={item.get('cohort_similarity', 0.0)} "
+                f"bundle={item.get('bundle_signature', 'none')} "
+                f"bundle_preserved={item.get('bundle_preserved', False)} "
+                f"bundle_reason={item.get('bundle_preservation_reason') or 'none'} "
                 f"bucket={item.get('selection_bucket', 'standard')} "
                 f"reasons={','.join(item['reasons']) or 'none'}"
             )
@@ -113,6 +116,7 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             lines.append(
                 f"  {item['lineage_id']} role={item['role']} parents={','.join(item['parent_lineage_ids']) or 'root'} "
                 f"source_agent={item['inheritance_source_agent_id'] or 'none'} "
+                f"source_selection={item.get('inheritance_source_selection_source') or 'none'} "
                 f"inherited_artifacts={len(item['inherited_artifact_ids'])} "
                 f"inherited_memorials={len(item['inherited_memorial_ids'])} "
                 f"taboo_tags={','.join(item['taboo_tags']) or 'none'} "
@@ -129,8 +133,87 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             lines.append(f"  {role}={value}")
         for role, value in sorted(summary.get("selection_summary", {}).get("role_bundle_count", {}).items()):
             lines.append(f"  bundle:{role}={value}")
+        for role, value in sorted(summary.get("selection_summary", {}).get("role_bundle_concentration_index", {}).items()):
+            lines.append(f"  bundle_share:{role}={value}")
+        for role, value in sorted(summary.get("selection_summary", {}).get("role_parent_bundle_concentration_index", {}).items()):
+            lines.append(f"  parent_bundle_share:{role}={value}")
         for origin, value in sorted(summary.get("selection_summary", {}).get("variant_origin_counts", {}).items()):
             lines.append(f"  origin:{origin}={value}")
+        for item in summary.get("selection_summary", {}).get("preserved_bundles", []):
+            lines.append(
+                "  preserved:"
+                f"{item['role']}:{item['prompt_variant_id']}:{item['package_policy_id']}"
+                f" via={item['lineage_id']}"
+            )
+        for role in summary.get("selection_summary", {}).get("bundle_archive_roles", []):
+            lines.append(f"  archive_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_cooldown_roles", []):
+            lines.append(f"  archive_cooldown_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_decay_prune_roles", []):
+            lines.append(f"  archive_decay_prune_role:{role}")
+        lines.append(
+            f"  archive_cooldown_count:{summary.get('selection_summary', {}).get('bundle_archive_cooldown_count', 0)}"
+        )
+        lines.append(
+            f"  archive_decay_prune_count:{summary.get('selection_summary', {}).get('bundle_decay_prune_count', 0)}"
+        )
+        lines.append(
+            f"  stale_bundle_count:{summary.get('selection_summary', {}).get('stale_bundle_count', 0)}"
+        )
+        lines.append(
+            f"  decaying_bundle_count:{summary.get('selection_summary', {}).get('decaying_bundle_count', 0)}"
+        )
+        lines.append(
+            "  archive_retirement_ready_count:"
+            f"{summary.get('selection_summary', {}).get('archive_retirement_ready_count', 0)}"
+        )
+        lines.append(
+            f"  pruned_bundle_count:{summary.get('selection_summary', {}).get('pruned_bundle_count', 0)}"
+        )
+        for item in summary.get("selection_summary", {}).get("stale_bundles", []):
+            lines.append(
+                "  stale:"
+                f"{item['role']}:{item['bundle_signature']}"
+                f" stale={item['stale_generations']}"
+                f" retention_debt={item.get('retention_debt', 0)}"
+                f" archive_decay_debt={item.get('archive_decay_debt', 0)}"
+            )
+        for item in summary.get("selection_summary", {}).get("decaying_bundles", []):
+            lines.append(
+                "  decaying:"
+                f"{item['role']}:{item['bundle_signature']}"
+                f" stale={item['stale_generations']}"
+                f" retention_debt={item['retention_debt']}"
+                f" archive_decay_debt={item['archive_decay_debt']}"
+                f" archive_decay_generations={item.get('archive_decay_generations', 0)}"
+                f" useful_streak={item.get('archive_useful_clean_streak', 0)}"
+                f" retirement_credit={item.get('archive_retirement_credit', 0)}"
+                f" avg_public_score={item.get('avg_public_score', 0.0)}"
+            )
+        for item in summary.get("selection_summary", {}).get("archive_retirement_ready_bundles", []):
+            lines.append(
+                "  retirement_ready:"
+                f"{item['role']}:{item['bundle_signature']}"
+                f" useful_streak={item['archive_useful_clean_streak']}"
+                f" retirement_credit={item['archive_retirement_credit']}"
+                f" archive_decay_debt={item['archive_decay_debt']}"
+                f" avg_public_score={item['avg_public_score']}"
+            )
+        for item in summary.get("selection_summary", {}).get("pruned_bundles", []):
+            lines.append(
+                "  pruned:"
+                f"{item['role']}:{item['bundle_signature']}"
+                f" stale={item['stale_generations']}"
+                f" retention_debt={item.get('retention_debt', 0)}"
+                f" archive_decay_debt={item.get('archive_decay_debt', 0)}"
+                f" archive_decay_generations={item.get('archive_decay_generations', 0)}"
+                f" useful_streak={item.get('archive_useful_clean_streak', 0)}"
+                f" retirement_credit={item.get('archive_retirement_credit', 0)}"
+                f" avg_public_score={item.get('avg_public_score', 0.0)}"
+                f" reason={item.get('pruned_reason', 'bundle_pressure_pruned')}"
+            )
+        for lineage_id in summary.get("selection_summary", {}).get("bundle_archive_lineages", []):
+            lines.append(f"  archive_lineage:{lineage_id}")
         lines.append("")
 
     inheritance_effect = summary.get("inheritance_effect", {})

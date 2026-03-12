@@ -76,6 +76,14 @@ def _parent_concentration(
     return round(highest_value, 4), highest_role
 
 
+def _bundle_set(lineage_updates: list[dict[str, Any]]) -> set[tuple[str, str, str]]:
+    return {
+        (item["role"], item["prompt_variant_id"], item["package_policy_id"])
+        for item in lineage_updates
+        if item.get("role") and item.get("prompt_variant_id") and item.get("package_policy_id")
+    }
+
+
 def lineage_entries(
     storage: StorageManager,
     generation_ids: list[int] | None = None,
@@ -155,6 +163,10 @@ def lineage_entries(
             "child_lineage_ids": child_lineages,
             "inheritance_source_agent_id": lineage_update.get("inheritance_source_agent_id"),
             "inheritance_source_generation_id": lineage_update.get("inheritance_source_generation_id"),
+            "inheritance_source_bundle_signature": lineage_update.get("inheritance_source_bundle_signature"),
+            "inheritance_source_bundle_preserved": lineage_update.get("inheritance_source_bundle_preserved", False),
+            "inheritance_source_bundle_reason": lineage_update.get("inheritance_source_bundle_reason"),
+            "inheritance_source_selection_source": lineage_update.get("inheritance_source_selection_source"),
             "inherited_artifact_ids": inherited_artifact_ids,
             "inherited_memorial_ids": inherited_memorial_ids,
             "inherited_artifacts": inherited_artifacts,
@@ -175,6 +187,9 @@ def lineage_entries(
             "prompt_variant_id": lineage_update.get("prompt_variant_id"),
             "prompt_variant_tags": lineage_update.get("prompt_variant_tags", []),
             "package_policy_id": lineage_update.get("package_policy_id"),
+            "bundle_signature": lineage_update.get("bundle_signature"),
+            "bundle_preserved": selection.get("bundle_preserved", False),
+            "bundle_preservation_reason": selection.get("bundle_preservation_reason"),
             "variant_origin": lineage_update.get("variant_origin"),
         }
         entry["warning_outcome"] = classify_warning_outcome(
@@ -252,11 +267,16 @@ def render_lineage_report(report: dict[str, Any]) -> str:
             f"  inherited_artifacts={len(entry['inherited_artifacts'])} inherited_memorials={len(entry['inherited_memorials'])} "
             f"taboo_tags={','.join(entry['taboo_tags']) or 'none'} "
             f"warning_labels={','.join(entry['warning_labels']) or 'none'} "
-            f"package_policy={entry['package_policy_id'] or 'none'} origin={entry['variant_origin'] or 'none'}"
+            f"package_policy={entry['package_policy_id'] or 'none'} origin={entry['variant_origin'] or 'none'} "
+            f"bundle={entry['bundle_signature'] or 'none'} parent_bundle={entry['inheritance_source_bundle_signature'] or 'none'} "
+            f"parent_preserved={entry['inheritance_source_bundle_preserved']} "
+            f"parent_source={entry['inheritance_source_selection_source'] or 'none'}"
         )
         lines.append(
             f"  base_score={entry['base_score']} diversity_bonus={entry['diversity_bonus']} "
-            f"cohort_similarity={entry['cohort_similarity']}"
+            f"cohort_similarity={entry['cohort_similarity']} "
+            f"bundle_preserved={entry['bundle_preserved']} "
+            f"bundle_reason={entry['bundle_preservation_reason'] or 'none'}"
         )
         for artifact in entry["inherited_artifacts"]:
             lines.append(
@@ -284,6 +304,8 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         generations.append(generation)
 
     generation_metrics = []
+    previous_bundles: set[tuple[str, str, str]] | None = None
+    previous_exploratory_bundles: set[tuple[str, str, str]] = set()
     for generation in generations:
         summary = generation.summary_json
         hidden_counts = summary.get("hidden_eval_failure_counts", {})
@@ -291,9 +313,23 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         role_monoculture = selection_summary.get("role_monoculture_index", {})
         role_counts = Counter(item.get("role") for item in summary.get("selection_outcome", []))
         major_roles = [role for role, count in role_counts.items() if count >= 3 and role in role_monoculture]
+        major_role_set = set(major_roles)
         scoped_monoculture = {role: role_monoculture[role] for role in major_roles}
         role_variant_count = selection_summary.get("role_variant_count", {})
         role_bundle_count = selection_summary.get("role_bundle_count", {})
+        role_bundle_concentration = selection_summary.get("role_bundle_concentration_index", {})
+        role_parent_bundle_concentration = selection_summary.get("role_parent_bundle_concentration_index", {})
+        scoped_bundle_concentration = {
+            role: role_bundle_concentration[role]
+            for role in major_roles
+            if role in role_bundle_concentration
+        }
+        scoped_parent_bundle_concentration = {
+            role: role_parent_bundle_concentration[role]
+            for role in major_roles
+            if role in role_parent_bundle_concentration
+        }
+        preserved_bundles = selection_summary.get("preserved_bundles", [])
         all_variants = {
             item.get("prompt_variant_id")
             for item in summary.get("lineage_updates", [])
@@ -332,6 +368,47 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 if bundle_share > largest_bundle_share:
                     largest_bundle_share = bundle_share
                     most_common_bundle_role = role
+        current_bundles = {
+            bundle
+            for bundle in _bundle_set(summary.get("lineage_updates", []))
+            if bundle[0] in major_role_set
+        }
+        bundle_survival = set() if previous_bundles is None else current_bundles & previous_bundles
+        new_bundles = current_bundles if previous_bundles is None else current_bundles - previous_bundles
+        new_bundle_signatures = {
+            f"{role}:{variant}:{policy}" for role, variant, policy in new_bundles
+        }
+        new_bundle_lineages = [
+            item
+            for item in summary.get("selection_outcome", [])
+            if item.get("role") in major_role_set and item.get("bundle_signature") in new_bundle_signatures
+        ]
+        exploratory_bundles = {
+            (
+                item.get("role"),
+                item.get("prompt_variant_id"),
+                item.get("package_policy_id"),
+            )
+            for item in summary.get("lineage_updates", [])
+            if item.get("variant_origin") == "bundle_archive_exploration"
+            and item.get("role") in major_role_set
+            and item.get("role")
+            and item.get("prompt_variant_id")
+            and item.get("package_policy_id")
+        }
+        exploration_bundle_survival = current_bundles & previous_exploratory_bundles
+        bundle_concentration_index = max(scoped_bundle_concentration.values(), default=0.0)
+        most_bundle_concentrated_role = (
+            max(scoped_bundle_concentration, key=lambda role: scoped_bundle_concentration[role])
+            if scoped_bundle_concentration
+            else None
+        )
+        parent_bundle_concentration_index = max(scoped_parent_bundle_concentration.values(), default=0.0)
+        most_parent_bundle_concentrated_role = (
+            max(scoped_parent_bundle_concentration, key=lambda role: scoped_parent_bundle_concentration[role])
+            if scoped_parent_bundle_concentration
+            else None
+        )
         parent_concentration, most_reused_parent_role = _parent_concentration(summary.get("lineage_updates", []))
         generation_metrics.append(
             {
@@ -361,12 +438,62 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 "most_common_bundle_role": most_common_bundle_role,
                 "role_variant_count": role_variant_count,
                 "role_bundle_count": role_bundle_count,
+                "bundle_concentration_index": round(bundle_concentration_index, 4),
+                "most_bundle_concentrated_role": most_bundle_concentrated_role,
+                "parent_bundle_concentration_index": round(parent_bundle_concentration_index, 4),
+                "most_parent_bundle_concentrated_role": most_parent_bundle_concentrated_role,
+                "preserved_bundle_count": len(preserved_bundles),
+                "preserved_bundles": [
+                    item["bundle_signature"]
+                    for item in preserved_bundles
+                    if item.get("bundle_signature")
+                ],
+                "bundle_archive_count": selection_summary.get("bundle_archive_count", 0),
+                "bundle_archive_candidate_roles": selection_summary.get("bundle_archive_candidate_roles", []),
+                "bundle_archive_roles": selection_summary.get("bundle_archive_roles", []),
+                "bundle_archive_cooldown_roles": selection_summary.get("bundle_archive_cooldown_roles", []),
+                "bundle_archive_cooldown_count": selection_summary.get("bundle_archive_cooldown_count", 0),
+                "bundle_decay_prune_roles": selection_summary.get("bundle_decay_prune_roles", []),
+                "bundle_decay_prune_count": selection_summary.get("bundle_decay_prune_count", 0),
+                "stale_bundle_count": selection_summary.get("stale_bundle_count", 0),
+                "decaying_bundle_count": selection_summary.get("decaying_bundle_count", 0),
+                "archive_retirement_ready_count": selection_summary.get("archive_retirement_ready_count", 0),
+                "pruned_bundle_count": selection_summary.get("pruned_bundle_count", 0),
+                "pruned_bundles": selection_summary.get("pruned_bundles", []),
+                "bundle_survival_count": len(bundle_survival),
+                "bundle_survival_rate": (
+                    round(len(bundle_survival) / len(previous_bundles), 4)
+                    if previous_bundles
+                    else 0.0
+                ),
+                "bundle_turnover_count": len(new_bundles),
+                "bundle_turnover_rate": round(len(new_bundles) / len(current_bundles), 4) if current_bundles else 0.0,
+                "new_bundle_win_rate": (
+                    round(
+                        sum(
+                            int(item.get("eligible") and item.get("quarantine_status") == "clean")
+                            for item in new_bundle_lineages
+                        )
+                        / len(new_bundle_lineages),
+                        4,
+                    )
+                    if new_bundle_lineages
+                    else 0.0
+                ),
+                "exploration_bundle_survival_count": len(exploration_bundle_survival),
+                "exploration_bundle_survival_rate": (
+                    round(len(exploration_bundle_survival) / len(previous_exploratory_bundles), 4)
+                    if previous_exploratory_bundles
+                    else 0.0
+                ),
                 "parent_concentration_index": parent_concentration,
                 "most_reused_parent_role": most_reused_parent_role,
                 "strategy_drift_rate": summary.get("drift", {}).get("strategy_drift_rate", 0.0),
                 "drift_pressure_lineages": selection_summary.get("variant_origin_counts", {}).get("drift_pressure", 0),
             }
         )
+        previous_bundles = current_bundles
+        previous_exploratory_bundles = exploratory_bundles
 
     lineages = lineage_entries(storage, generation_ids=generation_ids)
     outcome_counts = Counter(entry["outcome"] for entry in lineages)
@@ -395,6 +522,18 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         parent_reuse_delta = round(last["parent_concentration_index"] - first["parent_concentration_index"], 4)
         variant_delta = last["prompt_variant_count"] - first["prompt_variant_count"]
         bundle_delta = last["prompt_bundle_count"] - first["prompt_bundle_count"]
+        bundle_survival_delta = round(last["bundle_survival_rate"] - first["bundle_survival_rate"], 4)
+        bundle_turnover_delta = round(last["bundle_turnover_rate"] - first["bundle_turnover_rate"], 4)
+        bundle_archive_cooldown_delta = (
+            last["bundle_archive_cooldown_count"] - first["bundle_archive_cooldown_count"]
+        )
+        bundle_decay_prune_delta = last["bundle_decay_prune_count"] - first["bundle_decay_prune_count"]
+        stale_bundle_delta = last["stale_bundle_count"] - first["stale_bundle_count"]
+        decaying_bundle_delta = last["decaying_bundle_count"] - first["decaying_bundle_count"]
+        archive_retirement_ready_delta = (
+            last["archive_retirement_ready_count"] - first["archive_retirement_ready_count"]
+        )
+        pruned_bundle_delta = last["pruned_bundle_count"] - first["pruned_bundle_count"]
         if diffusion_delta < 0:
             notes.append(f"Diffusion alerts fell by {-diffusion_delta} between the first and last generation.")
         elif diffusion_delta > 0:
@@ -432,6 +571,58 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             notes.append(f"Prompt bundle coverage fell by {-bundle_delta} across the batch.")
         else:
             notes.append("Prompt bundle coverage stayed flat across the batch.")
+        if bundle_survival_delta > 0:
+            notes.append(f"Bundle survival rate increased by {bundle_survival_delta} across the batch.")
+        elif bundle_survival_delta < 0:
+            notes.append(f"Bundle survival rate fell by {-bundle_survival_delta} across the batch.")
+        else:
+            notes.append("Bundle survival rate stayed flat across the batch.")
+        if bundle_turnover_delta > 0:
+            notes.append(f"Bundle turnover rate increased by {bundle_turnover_delta} across the batch.")
+        elif bundle_turnover_delta < 0:
+            notes.append(f"Bundle turnover rate fell by {-bundle_turnover_delta} across the batch.")
+        else:
+            notes.append("Bundle turnover rate stayed flat across the batch.")
+        if bundle_archive_cooldown_delta > 0:
+            notes.append(f"Archive cooldown blocked {bundle_archive_cooldown_delta} more roles by the end of the batch.")
+        elif bundle_archive_cooldown_delta < 0:
+            notes.append(f"Archive cooldown pressure fell by {-bundle_archive_cooldown_delta} roles across the batch.")
+        else:
+            notes.append("Archive cooldown pressure stayed flat across the batch.")
+        if bundle_decay_prune_delta > 0:
+            notes.append(f"Archive decay pruning expanded to {bundle_decay_prune_delta} more roles across the batch.")
+        elif bundle_decay_prune_delta < 0:
+            notes.append(f"Archive decay pruning fell by {-bundle_decay_prune_delta} roles across the batch.")
+        else:
+            notes.append("Archive decay pruning stayed flat across the batch.")
+        if stale_bundle_delta > 0:
+            notes.append(f"Stale bundle count increased by {stale_bundle_delta} across the batch.")
+        elif stale_bundle_delta < 0:
+            notes.append(f"Stale bundle count fell by {-stale_bundle_delta} across the batch.")
+        else:
+            notes.append("Stale bundle count stayed flat across the batch.")
+        if decaying_bundle_delta > 0:
+            notes.append(f"Archive decay pressure increased by {decaying_bundle_delta} bundles across the batch.")
+        elif decaying_bundle_delta < 0:
+            notes.append(f"Archive decay pressure fell by {-decaying_bundle_delta} bundles across the batch.")
+        else:
+            notes.append("Archive decay pressure stayed flat across the batch.")
+        if archive_retirement_ready_delta > 0:
+            notes.append(
+                f"Archive retirement readiness increased by {archive_retirement_ready_delta} bundles across the batch."
+            )
+        elif archive_retirement_ready_delta < 0:
+            notes.append(
+                f"Archive retirement readiness fell by {-archive_retirement_ready_delta} bundles across the batch."
+            )
+        else:
+            notes.append("Archive retirement readiness stayed flat across the batch.")
+        if pruned_bundle_delta > 0:
+            notes.append(f"Bundle pruning count increased by {pruned_bundle_delta} across the batch.")
+        elif pruned_bundle_delta < 0:
+            notes.append(f"Bundle pruning count fell by {-pruned_bundle_delta} across the batch.")
+        else:
+            notes.append("Bundle pruning count stayed flat across the batch.")
     if warned_lineages:
         notes.append(
             "Inheritance warning effect: "
@@ -478,14 +669,50 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"prompt_bundle_count={metric['prompt_bundle_count']} "
             f"largest_variant_share={metric['largest_variant_share']} "
             f"largest_bundle_share={metric['largest_bundle_share']} "
+            f"bundle_concentration_index={metric['bundle_concentration_index']} "
+            f"parent_bundle_concentration_index={metric['parent_bundle_concentration_index']} "
+            f"bundle_survival_rate={metric['bundle_survival_rate']} "
+            f"bundle_turnover_rate={metric['bundle_turnover_rate']} "
+            f"new_bundle_win_rate={metric['new_bundle_win_rate']} "
+            f"exploration_bundle_survival_rate={metric['exploration_bundle_survival_rate']} "
+            f"preserved_bundle_count={metric['preserved_bundle_count']} "
+            f"bundle_archive_count={metric['bundle_archive_count']} "
+            f"bundle_archive_cooldown_count={metric['bundle_archive_cooldown_count']} "
+            f"bundle_decay_prune_count={metric['bundle_decay_prune_count']} "
+            f"stale_bundle_count={metric['stale_bundle_count']} "
+            f"decaying_bundle_count={metric['decaying_bundle_count']} "
+            f"archive_retirement_ready_count={metric['archive_retirement_ready_count']} "
+            f"pruned_bundle_count={metric['pruned_bundle_count']} "
             f"parent_concentration_index={metric['parent_concentration_index']} "
             f"drift_pressure_lineages={metric['drift_pressure_lineages']} "
             f"diversity_priority_count={metric['diversity_priority_count']} "
             f"most_converged_role={metric['most_converged_role'] or 'none'} "
             f"most_common_variant_role={metric['most_common_variant_role'] or 'none'} "
             f"most_common_bundle_role={metric['most_common_bundle_role'] or 'none'} "
+            f"most_bundle_concentrated_role={metric['most_bundle_concentrated_role'] or 'none'} "
+            f"most_parent_bundle_concentrated_role={metric['most_parent_bundle_concentrated_role'] or 'none'} "
             f"most_reused_parent_role={metric['most_reused_parent_role'] or 'none'}"
         )
+        if metric["preserved_bundles"]:
+            lines.append(f"  preserved_bundles={','.join(metric['preserved_bundles'])}")
+        if metric["bundle_archive_roles"]:
+            lines.append(f"  bundle_archive_roles={','.join(metric['bundle_archive_roles'])}")
+        if metric["bundle_archive_cooldown_roles"]:
+            lines.append(
+                f"  bundle_archive_cooldown_roles={','.join(metric['bundle_archive_cooldown_roles'])}"
+            )
+        if metric["bundle_decay_prune_roles"]:
+            lines.append(
+                f"  bundle_decay_prune_roles={','.join(metric['bundle_decay_prune_roles'])}"
+            )
+        if metric["pruned_bundles"]:
+            lines.append(
+                "  pruned_bundles="
+                + ",".join(
+                    f"{item['role']}:{item['bundle_signature']}:{item.get('pruned_reason', 'bundle_pressure_pruned')}"
+                    for item in metric["pruned_bundles"]
+                )
+            )
     lines.extend(["", "## Lineage outcomes", ""])
     for outcome, count in sorted(report["lineage_outcomes"].items()):
         lines.append(f"- {outcome}: {count}")

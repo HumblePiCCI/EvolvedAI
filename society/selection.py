@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from collections import defaultdict
 from itertools import combinations
 from typing import Any
 
@@ -18,6 +18,12 @@ from society.schemas import AgentRecord, ArtifactRecord, EvalRecord, SelectionDe
 _DIVERSITY_BONUS_SCALE = 0.08
 _MONOCULTURE_THRESHOLD = 0.95
 _MIN_DIVERSITY_ROLE_SIZE = 3
+
+
+def bundle_signature(role: str, prompt_variant_id: str | None, package_policy_id: str | None) -> str | None:
+    if prompt_variant_id is None or package_policy_id is None:
+        return None
+    return f"{role}:{prompt_variant_id}:{package_policy_id}"
 
 
 def _worst_quarantine_status(statuses: list[str]) -> str:
@@ -75,6 +81,7 @@ def select_candidates(
     agents: list[AgentRecord],
     evals: list[EvalRecord],
     artifacts: list[ArtifactRecord] | None = None,
+    variation_by_agent: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[SelectionDecision]:
     evals_by_agent: dict[str, list[EvalRecord]] = defaultdict(list)
     artifacts_by_agent: dict[str, list[ArtifactRecord]] = defaultdict(list)
@@ -92,6 +99,9 @@ def select_candidates(
 
     decisions: list[SelectionDecision] = []
     for agent in agents:
+        variation = {} if variation_by_agent is None else variation_by_agent.get(agent.agent_id, {})
+        prompt_variant_id = variation.get("prompt_variant_id")
+        package_policy_id = variation.get("package_policy_id")
         reasons: list[str] = []
         public_scores: list[float] = []
         hidden_failures: list[str] = []
@@ -151,6 +161,9 @@ def select_candidates(
                 agent_id=agent.agent_id,
                 lineage_id=agent.lineage_id,
                 role=agent.role,
+                prompt_variant_id=prompt_variant_id,
+                package_policy_id=package_policy_id,
+                bundle_signature=bundle_signature(agent.role, prompt_variant_id, package_policy_id),
                 eligible=eligible,
                 propagation_blocked=propagation_blocked,
                 score=round(score, 4),
@@ -179,10 +192,239 @@ def select_candidates(
     )
 
 
+def _candidate_sort_key(candidate: Mapping[str, Any]) -> tuple[float, float, int]:
+    decision = candidate["decision"]
+    return (
+        decision.score,
+        decision.diversity_bonus,
+        -len(decision.reasons),
+    )
+
+
+def _candidate_bundle_signature(candidate: Mapping[str, Any]) -> str | None:
+    decision = candidate["decision"]
+    if decision.bundle_signature is not None:
+        return decision.bundle_signature
+    return bundle_signature(
+        decision.role,
+        decision.prompt_variant_id,
+        decision.package_policy_id,
+    )
+
+
+def _with_pool_metadata(
+    candidate: Mapping[str, Any],
+    *,
+    preserved: bool,
+    preservation_reason: str | None,
+    selection_source: str,
+) -> dict[str, Any]:
+    bundle_id = _candidate_bundle_signature(candidate)
+    return {
+        **candidate,
+        "bundle_signature": bundle_id,
+        "bundle_preserved": preserved,
+        "bundle_preservation_reason": preservation_reason,
+        "selection_source": selection_source,
+    }
+
+
+def _bundle_state(
+    bundle_id: str,
+    bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None,
+) -> Mapping[str, Any]:
+    if bundle_state_by_signature is None:
+        return {}
+    return bundle_state_by_signature.get(bundle_id, {})
+
+
+def _bundle_decay_debt(state: Mapping[str, Any]) -> int:
+    clean_wins = int(state.get("clean_win_generations", 0))
+    preserved_generations = int(state.get("preserved_generations", 0))
+    archive_generations = int(state.get("archive_generations", 0))
+    return max(0, preserved_generations - clean_wins) + max(0, archive_generations - clean_wins)
+
+
+def _bundle_retention_key(
+    bundle_id: str,
+    candidate: Mapping[str, Any],
+    bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None,
+    by_bundle: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> tuple[int, int, int, int, float, float, int]:
+    state = _bundle_state(bundle_id, bundle_state_by_signature)
+    decision = candidate["decision"]
+    return (
+        int(state.get("stale_generations", 0)),
+        int(state.get("archive_decay_generations", 0)),
+        _bundle_decay_debt(state),
+        -int(state.get("clean_win_generations", 0)),
+        -float(state.get("avg_score", decision.score)),
+        -decision.diversity_bonus,
+        len(by_bundle[bundle_id]),
+    )
+
+
+def _bundle_balanced_selection(
+    ordered: list[dict[str, Any]],
+    *,
+    slot_count: int,
+    exploration_slots: int = 0,
+    reserve_penalty_slots: int = 0,
+    bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    by_bundle: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in ordered:
+        bundle_id = _candidate_bundle_signature(item)
+        if bundle_id is None:
+            return [
+                _with_pool_metadata(
+                    candidate,
+                    preserved=False,
+                    preservation_reason=None,
+                    selection_source="ordered_fallback",
+                )
+                for candidate in ordered[: min(slot_count, len(ordered))]
+            ]
+        by_bundle[bundle_id].append(item)
+
+    if len(by_bundle) <= 1:
+        fallback: list[dict[str, Any]] = []
+        for index, candidate in enumerate(ordered[: min(slot_count, len(ordered))]):
+            fallback.append(
+                _with_pool_metadata(
+                    candidate,
+                    preserved=index == 0,
+                    preservation_reason="single_bundle_role" if index == 0 else None,
+                    selection_source="bundle_reserve" if index == 0 else "ordered_fallback",
+                )
+            )
+        return fallback
+
+    representatives = sorted(
+        (
+            (bundle_id, items[0])
+            for bundle_id, items in by_bundle.items()
+        ),
+        key=lambda candidate: _bundle_retention_key(
+            candidate[0],
+            candidate[1],
+            bundle_state_by_signature,
+            by_bundle,
+        ),
+    )
+    selected: list[dict[str, Any]] = []
+    bundle_slots: Counter[str] = Counter()
+    reserve_limit = max(1, slot_count - max(0, exploration_slots) - max(0, reserve_penalty_slots))
+    if reserve_penalty_slots > 0:
+        reserve_limit = min(
+            reserve_limit,
+            max(1, len(representatives) - reserve_penalty_slots),
+        )
+
+    for bundle_id, item in representatives[: min(reserve_limit, len(representatives))]:
+        selected.append(
+            _with_pool_metadata(
+                item,
+                preserved=True,
+                preservation_reason="bundle_reserve",
+                selection_source="bundle_reserve",
+            )
+        )
+        bundle_slots[bundle_id] += 1
+
+    remaining_exploration_slots = min(exploration_slots, max(0, slot_count - len(selected)))
+    if remaining_exploration_slots > 0:
+        exploration_candidates = sorted(
+            (
+                (bundle_id, items[0])
+                for bundle_id, items in by_bundle.items()
+                if bundle_slots[bundle_id] > 0
+            ),
+            key=lambda candidate: (
+                _bundle_state(candidate[0], bundle_state_by_signature).get("stale_generations", 0),
+                _bundle_state(candidate[0], bundle_state_by_signature).get("archive_decay_generations", 0),
+                _bundle_decay_debt(_bundle_state(candidate[0], bundle_state_by_signature)),
+                len(by_bundle[candidate[0]]),
+                -candidate[1]["decision"].diversity_bonus,
+                -candidate[1]["decision"].score,
+                len(candidate[1]["decision"].reasons),
+            ),
+        )
+        for bundle_id, item in exploration_candidates[:remaining_exploration_slots]:
+            selected.append(
+                _with_pool_metadata(
+                    item,
+                    preserved=False,
+                    preservation_reason="bundle_archive_exploration",
+                    selection_source="bundle_exploration",
+                )
+            )
+            bundle_slots[bundle_id] += 1
+
+    while len(selected) < slot_count:
+        candidate_options: list[
+            tuple[tuple[int, int, int, bool, float, float, int], str, dict[str, Any]]
+        ] = []
+        for bundle_id, items in by_bundle.items():
+            if reserve_penalty_slots > 0 and bundle_slots[bundle_id] == 0:
+                continue
+            template = items[0]
+            decision = template["decision"]
+            candidate_options.append(
+                (
+                    (
+                        bundle_slots[bundle_id],
+                        int(_bundle_state(bundle_id, bundle_state_by_signature).get("archive_decay_generations", 0)),
+                        _bundle_decay_debt(_bundle_state(bundle_id, bundle_state_by_signature)),
+                        False,
+                        -decision.score,
+                        -decision.diversity_bonus,
+                        len(decision.reasons),
+                    ),
+                    bundle_id,
+                    template,
+                )
+            )
+        if not candidate_options:
+            for bundle_id, items in by_bundle.items():
+                template = items[0]
+                decision = template["decision"]
+                candidate_options.append(
+                    (
+                        (
+                            bundle_slots[bundle_id],
+                            int(_bundle_state(bundle_id, bundle_state_by_signature).get("archive_decay_generations", 0)),
+                            _bundle_decay_debt(_bundle_state(bundle_id, bundle_state_by_signature)),
+                            False,
+                            -decision.score,
+                            -decision.diversity_bonus,
+                            len(decision.reasons),
+                        ),
+                        bundle_id,
+                        template,
+                    )
+                )
+        _, bundle_id, template = min(candidate_options, key=lambda item: item[0])
+        selected.append(
+            _with_pool_metadata(
+                template,
+                preserved=False,
+                preservation_reason=None,
+                selection_source="bundle_balance_refill",
+            )
+        )
+        bundle_slots[bundle_id] += 1
+
+    return selected[:slot_count]
+
+
 def build_parent_candidate_pool(
     candidates: Sequence[Mapping[str, Any]],
     *,
     slot_count: int,
+    exploration_slots: int = 0,
+    reserve_penalty_slots: int = 0,
+    bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if slot_count <= 0 or not candidates:
         return []
@@ -191,15 +433,17 @@ def build_parent_candidate_pool(
         dict(candidate)
         for candidate in sorted(
             candidates,
-            key=lambda candidate: (
-                candidate["decision"].score,
-                candidate["decision"].diversity_bonus,
-                -len(candidate["decision"].reasons),
-            ),
+            key=_candidate_sort_key,
             reverse=True,
         )
     ]
-    selected = list(ordered[: min(slot_count, len(ordered))])
+    selected = _bundle_balanced_selection(
+        ordered,
+        slot_count=slot_count,
+        exploration_slots=exploration_slots,
+        reserve_penalty_slots=reserve_penalty_slots,
+        bundle_state_by_signature=bundle_state_by_signature,
+    )
     if not selected:
         return []
 
@@ -222,12 +466,26 @@ def build_parent_candidate_pool(
                 key=lambda item: (item["decision"].diversity_bonus, item["decision"].score),
                 default=duplicate_source,
             )
-            dropped = min(
-                standard_candidates,
-                key=lambda item: (item["decision"].score, item["decision"].diversity_bonus),
-            )
-            selected.remove(dropped)
-            selected.append(replacement)
+            bundle_counts = Counter(item.get("bundle_signature") for item in selected)
+            droppable_candidates = [
+                item
+                for item in standard_candidates
+                if bundle_counts.get(item.get("bundle_signature"), 0) > 1
+            ]
+            if droppable_candidates:
+                dropped = min(
+                    droppable_candidates,
+                    key=lambda item: (item["decision"].score, item["decision"].diversity_bonus),
+                )
+                selected.remove(dropped)
+                selected.append(
+                    _with_pool_metadata(
+                        replacement,
+                        preserved=replacement.get("bundle_preserved", False),
+                        preservation_reason=replacement.get("bundle_preservation_reason"),
+                        selection_source=replacement.get("selection_source", "diversity_refill"),
+                    )
+                )
 
     refill_order = sorted(
         selected,

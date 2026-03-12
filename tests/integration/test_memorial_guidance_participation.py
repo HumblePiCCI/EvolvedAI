@@ -123,10 +123,15 @@ def test_prompt_variation_lowers_citizen_monoculture_and_parent_collapse(tmp_pat
         assert summary_one["selection_summary"]["role_monoculture_index"]["citizen"] < 0.4
 
         citizen_updates = [item for item in summary_two["lineage_updates"] if item["role"] == "citizen"]
-        parent_ids = [item["parent_lineage_ids"][0] for item in citizen_updates if item["parent_lineage_ids"]]
+        parent_bundle_signatures = {
+            item["inheritance_source_bundle_signature"]
+            for item in citizen_updates
+            if item["inheritance_source_bundle_signature"]
+        }
 
-        assert len(parent_ids) == 6
-        assert len(set(parent_ids)) == 6
+        assert len(citizen_updates) == 6
+        assert len(parent_bundle_signatures) >= 4
+        assert summary_two["selection_summary"]["role_parent_bundle_concentration_index"]["citizen"] < 0.5
     finally:
         storage.close()
 
