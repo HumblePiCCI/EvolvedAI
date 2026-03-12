@@ -293,13 +293,21 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         major_roles = [role for role, count in role_counts.items() if count >= 3 and role in role_monoculture]
         scoped_monoculture = {role: role_monoculture[role] for role in major_roles}
         role_variant_count = selection_summary.get("role_variant_count", {})
+        role_bundle_count = selection_summary.get("role_bundle_count", {})
         all_variants = {
             item.get("prompt_variant_id")
             for item in summary.get("lineage_updates", [])
             if item.get("prompt_variant_id")
         }
+        all_bundles = {
+            (item.get("prompt_variant_id"), item.get("package_policy_id"))
+            for item in summary.get("lineage_updates", [])
+            if item.get("prompt_variant_id") and item.get("package_policy_id")
+        }
         largest_variant_share = 0.0
+        largest_bundle_share = 0.0
         most_common_variant_role = None
+        most_common_bundle_role = None
         for role, count in role_counts.items():
             if count < 3:
                 continue
@@ -314,6 +322,16 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             if share > largest_variant_share:
                 largest_variant_share = share
                 most_common_variant_role = role
+            role_bundles = [
+                (item.get("prompt_variant_id"), item.get("package_policy_id"))
+                for item in summary.get("lineage_updates", [])
+                if item.get("role") == role and item.get("prompt_variant_id") and item.get("package_policy_id")
+            ]
+            if role_bundles:
+                bundle_share = max(Counter(role_bundles).values()) / len(role_bundles)
+                if bundle_share > largest_bundle_share:
+                    largest_bundle_share = bundle_share
+                    most_common_bundle_role = role
         parent_concentration, most_reused_parent_role = _parent_concentration(summary.get("lineage_updates", []))
         generation_metrics.append(
             {
@@ -336,12 +354,17 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     max(scoped_monoculture, key=lambda role: scoped_monoculture[role]) if scoped_monoculture else None
                 ),
                 "prompt_variant_count": len(all_variants),
+                "prompt_bundle_count": len(all_bundles),
                 "largest_variant_share": round(largest_variant_share, 4),
+                "largest_bundle_share": round(largest_bundle_share, 4),
                 "most_common_variant_role": most_common_variant_role,
+                "most_common_bundle_role": most_common_bundle_role,
                 "role_variant_count": role_variant_count,
+                "role_bundle_count": role_bundle_count,
                 "parent_concentration_index": parent_concentration,
                 "most_reused_parent_role": most_reused_parent_role,
                 "strategy_drift_rate": summary.get("drift", {}).get("strategy_drift_rate", 0.0),
+                "drift_pressure_lineages": selection_summary.get("variant_origin_counts", {}).get("drift_pressure", 0),
             }
         )
 
@@ -371,6 +394,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         monoculture_delta = round(last["monoculture_index"] - first["monoculture_index"], 4)
         parent_reuse_delta = round(last["parent_concentration_index"] - first["parent_concentration_index"], 4)
         variant_delta = last["prompt_variant_count"] - first["prompt_variant_count"]
+        bundle_delta = last["prompt_bundle_count"] - first["prompt_bundle_count"]
         if diffusion_delta < 0:
             notes.append(f"Diffusion alerts fell by {-diffusion_delta} between the first and last generation.")
         elif diffusion_delta > 0:
@@ -402,6 +426,12 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             notes.append(f"Prompt variant coverage fell by {-variant_delta} across the batch.")
         else:
             notes.append("Prompt variant coverage stayed flat across the batch.")
+        if bundle_delta > 0:
+            notes.append(f"Prompt bundle coverage increased by {bundle_delta} across the batch.")
+        elif bundle_delta < 0:
+            notes.append(f"Prompt bundle coverage fell by {-bundle_delta} across the batch.")
+        else:
+            notes.append("Prompt bundle coverage stayed flat across the batch.")
     if warned_lineages:
         notes.append(
             "Inheritance warning effect: "
@@ -445,11 +475,15 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"memorial_transfer_score={metric['memorial_transfer_score']} "
             f"monoculture_index={metric['monoculture_index']} "
             f"prompt_variant_count={metric['prompt_variant_count']} "
+            f"prompt_bundle_count={metric['prompt_bundle_count']} "
             f"largest_variant_share={metric['largest_variant_share']} "
+            f"largest_bundle_share={metric['largest_bundle_share']} "
             f"parent_concentration_index={metric['parent_concentration_index']} "
+            f"drift_pressure_lineages={metric['drift_pressure_lineages']} "
             f"diversity_priority_count={metric['diversity_priority_count']} "
             f"most_converged_role={metric['most_converged_role'] or 'none'} "
             f"most_common_variant_role={metric['most_common_variant_role'] or 'none'} "
+            f"most_common_bundle_role={metric['most_common_bundle_role'] or 'none'} "
             f"most_reused_parent_role={metric['most_reused_parent_role'] or 'none'}"
         )
     lines.extend(["", "## Lineage outcomes", ""])

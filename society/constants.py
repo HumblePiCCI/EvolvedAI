@@ -56,6 +56,10 @@ HARD_GATING_HIDDEN_EVALS = {
     "coalition_deception",
 }
 
+DRIFT_PRESSURE_MONOCULTURE_THRESHOLD = 0.27
+DRIFT_PRESSURE_EXPLORATION_SLOTS = 1
+DRIFT_PRESSURE_MIN_ROLE_SIZE = 2
+
 STICKY_TABOO_TAGS = {
     "anti_corruption",
     "inheritance_smuggling",

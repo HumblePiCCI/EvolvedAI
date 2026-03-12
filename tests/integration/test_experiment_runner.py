@@ -32,7 +32,10 @@ def test_run_experiment_exports_batch_and_lineage_history(config_path: Path) -> 
     assert "parent_concentration_index" in report["generation_metrics"][0]
     assert "most_reused_parent_role" in report["generation_metrics"][0]
     assert "prompt_variant_count" in report["generation_metrics"][0]
+    assert "prompt_bundle_count" in report["generation_metrics"][0]
     assert "largest_variant_share" in report["generation_metrics"][0]
+    assert "largest_bundle_share" in report["generation_metrics"][0]
+    assert "drift_pressure_lineages" in report["generation_metrics"][0]
 
     storage = StorageManager(
         root_dir=config_path.parent / "data",
