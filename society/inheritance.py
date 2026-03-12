@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import defaultdict
+
 from society.constants import QUARANTINE_CLEAN, STICKY_TABOO_TAGS
 from society.schemas import ArtifactRecord, InheritancePackage, MemorialRecord
 
@@ -22,6 +24,24 @@ def build_taboo_registry(
             if not allowed_tags or tag in allowed_tags
         }
     )
+
+
+def build_role_scoped_taboo_registry(
+    memorials: list[MemorialRecord],
+    *,
+    role_by_agent_id: dict[str, str],
+    sticky_tags: set[str] | None = None,
+) -> dict[str, list[str]]:
+    allowed_tags = STICKY_TABOO_TAGS if sticky_tags is None else sticky_tags
+    tags_by_role: dict[str, set[str]] = defaultdict(set)
+    for memorial in memorials:
+        role = role_by_agent_id.get(memorial.source_agent_id)
+        if role is None:
+            continue
+        for tag in memorial.taboo_tags:
+            if not allowed_tags or tag in allowed_tags:
+                tags_by_role[role].add(tag)
+    return {role: sorted(tags) for role, tags in tags_by_role.items()}
 
 
 def assemble_inheritance_package(

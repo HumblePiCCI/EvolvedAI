@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from society.inheritance import assemble_inheritance_package, build_taboo_registry
+from society.inheritance import assemble_inheritance_package, build_role_scoped_taboo_registry, build_taboo_registry
 from society.schemas import ArtifactRecord, MemorialRecord
 
 
@@ -68,3 +68,33 @@ def test_build_taboo_registry_keeps_only_sticky_tags() -> None:
         linked_artifact_ids=[],
     )
     assert build_taboo_registry([memorial]) == ["anti_corruption", "coalition_deception"]
+
+
+def test_build_role_scoped_taboo_registry_keeps_tags_with_source_roles() -> None:
+    adversary_memorial = MemorialRecord(
+        memorial_id="mem-2",
+        source_agent_id="agent-adv",
+        lineage_id="lin-2",
+        classification="cautionary",
+        top_contribution="pressure test",
+        lesson_distillate="keep the taboo scoped",
+        taboo_tags=["anti_corruption", "coalition_deception"],
+        linked_artifact_ids=[],
+    )
+    citizen_memorial = adversary_memorial.model_copy(
+        update={
+            "memorial_id": "mem-3",
+            "source_agent_id": "agent-cit",
+            "taboo_tags": ["artifact_quality", "diffusion_alerts"],
+        }
+    )
+
+    registry = build_role_scoped_taboo_registry(
+        [adversary_memorial, citizen_memorial],
+        role_by_agent_id={"agent-adv": "adversary", "agent-cit": "citizen"},
+    )
+
+    assert registry == {
+        "adversary": ["anti_corruption", "coalition_deception"],
+        "citizen": ["diffusion_alerts"],
+    }

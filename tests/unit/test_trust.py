@@ -28,8 +28,8 @@ def test_summarize_warning_effect_tracks_avoided_repeated_and_shifted_failures()
     assert classify_warning_outcome(warning_labels={"anti_corruption"}, current_failures=set()) == "avoided_recurrence"
     assert effect == {
         "warned_lineages": 3,
-        "avoided_recurrence": 1,
+        "avoided_recurrence": 2,
         "repeated_warning": 1,
         "shifted_failure": 1,
-        "transfer_score": 0.3333,
+        "transfer_score": 0.6667,
     }

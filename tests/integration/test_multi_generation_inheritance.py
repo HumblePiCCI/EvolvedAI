@@ -28,6 +28,7 @@ def test_blocked_lineages_do_not_propagate_across_generations(minimal_config) ->
             item for item in summary_two["lineage_updates"] if item["role"] in {"citizen", "judge"}
         ]
         assert any(item["parent_lineage_ids"] for item in citizen_or_judge_updates)
+        assert all("anti_corruption" not in item["taboo_tags"] for item in citizen_or_judge_updates)
 
         adversary_update = next(item for item in summary_two["lineage_updates"] if item["role"] == "adversary")
         assert adversary_update["parent_lineage_ids"] == []
@@ -57,6 +58,10 @@ def test_sticky_taboo_registry_survives_one_clean_generation(minimal_config) -> 
         assert "anti_corruption" in update_two["taboo_tags"]
         assert "anti_corruption" in update_three["taboo_tags"]
         assert "anti_corruption" in update_three["registry_taboo_tags"]
+        citizen_two = next(item for item in summary_two["lineage_updates"] if item["role"] == "citizen")
+        citizen_three = next(item for item in summary_three["lineage_updates"] if item["role"] == "citizen")
+        assert "anti_corruption" not in citizen_two["taboo_tags"]
+        assert "anti_corruption" not in citizen_three["taboo_tags"]
         assert summary_two["inheritance_effect"]["warned_lineages"] >= 1
         assert summary_two["inheritance_effect"]["avoided_recurrence"] >= 1
         assert summary_two["inheritance_effect"]["transfer_score"] > 0.0

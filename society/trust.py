@@ -63,16 +63,17 @@ def summarize_warning_effect(
     shifted_failure = 0
 
     for labels, failures in records:
-        outcome = classify_warning_outcome(warning_labels=labels, current_failures=failures)
-        if outcome == "unwarned":
+        warning_set = {label for label in labels if label}
+        if not warning_set:
             continue
         warned_lineages += 1
-        if outcome == "avoided_recurrence":
-            avoided_recurrence += 1
-        elif outcome == "repeated_warning":
+        failure_set = {failure for failure in failures if failure}
+        if warning_set & failure_set:
             repeated_warning += 1
         else:
-            shifted_failure += 1
+            avoided_recurrence += 1
+            if failure_set:
+                shifted_failure += 1
 
     transfer_score = avoided_recurrence / warned_lineages if warned_lineages else 0.0
     return {
