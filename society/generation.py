@@ -14,6 +14,7 @@ from society.constants import (
     QUARANTINE_CLEAN,
     QUARANTINE_REVIEW,
     QUARANTINE_SEVERITY,
+    ROLE_ORDER,
     RUNNING_STATUS,
     TABOO_REGISTRY_VERSION,
     TERMINATED_STATUS,
@@ -234,11 +235,17 @@ class GenerationRunner:
         all_artifacts: list[ArtifactRecord] = []
         all_events: list[EventRecord] = []
         episode_summaries: list[dict[str, Any]] = []
+        participation_counts = {agent.agent_id: 0 for agent in agents}
 
         if not dry_run:
             task_pool = self.config.world_config().task_pool
             for episode_index in range(self.config.generation.episodes_per_generation):
-                episode_agents = self._active_agents_for_episode(agents, episode_index)
+                episode_agents = self._active_agents_for_episode(
+                    agents,
+                    episode_index,
+                    participation_counts=participation_counts,
+                    inheritance_packages=inheritance_packages,
+                )
                 world = SharedNotebookV0(
                     root_dir=self.storage.root_dir,
                     generation_id=generation_id,
@@ -284,6 +291,7 @@ class GenerationRunner:
                     )
                     for event in result.events:
                         self._store_event(event, all_events)
+                    participation_counts[agent.agent_id] += 1
                     self.storage.append_agent_log(
                         generation_id,
                         agent.agent_id,
@@ -536,11 +544,36 @@ class GenerationRunner:
             )
         return agents, inheritance_packages, lineage_updates
 
-    def _active_agents_for_episode(self, agents: list[AgentRecord], episode_index: int) -> list[AgentRecord]:
+    def _active_agents_for_episode(
+        self,
+        agents: list[AgentRecord],
+        episode_index: int,
+        *,
+        participation_counts: dict[str, int],
+        inheritance_packages: dict[str, InheritancePackage],
+    ) -> list[AgentRecord]:
         if not agents:
             return []
-        offset = episode_index % len(agents)
-        return agents[offset:] + agents[:offset]
+
+        role_buckets: dict[str, list[AgentRecord]] = defaultdict(list)
+        for agent in agents:
+            role_buckets[agent.role].append(agent)
+
+        ordered: list[AgentRecord] = []
+        for role in ROLE_ORDER:
+            bucket = role_buckets.get(role, [])
+            if not bucket:
+                continue
+            bucket.sort(
+                key=lambda agent: (
+                    participation_counts.get(agent.agent_id, 0),
+                    0 if inheritance_packages[agent.agent_id].memorial_ids else 1,
+                    0 if inheritance_packages[agent.agent_id].taboo_tags else 1,
+                    (int(agent.agent_id.rsplit("-", 1)[-1]) - episode_index) % max(len(bucket), 1),
+                )
+            )
+            ordered.extend(bucket)
+        return ordered
 
     def _build_summary(
         self,

@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from society.config import AutoCivConfig
+from society.generation import GenerationRunner
+from society.providers import build_provider
+from society.storage import StorageManager
+
+from tests.conftest import REPO_ROOT, minimal_config_data
+
+
+def _full_population_config(tmp_path: Path) -> AutoCivConfig:
+    data = minimal_config_data(tmp_path)
+    data["generation"].update(
+        {
+            "population_size": 12,
+            "islands": 2,
+            "episodes_per_generation": 4,
+            "max_turns_per_episode": 10,
+            "seed": 42,
+        }
+    )
+    data["worlds"]["shared_notebook_v0"]["task_pool"] = [
+        "Draft a bounded research note on whether a prior claim should be accepted, rejected, or deferred.",
+        "Summarize the strongest supported claim and the most important unresolved uncertainty.",
+        "Prepare a correction-ready notebook entry with explicit citations and open risks.",
+        "Produce a final artifact that distinguishes evidence, inference, and speculation.",
+    ]
+    data["roles"]["distribution"] = {
+        "citizen": 6,
+        "judge": 2,
+        "steward": 2,
+        "archivist": 1,
+        "adversary": 1,
+    }
+    data["roles"]["behaviors"] = {
+        "citizen": "honest",
+        "judge": "self_correcting",
+        "steward": "honest",
+        "archivist": "honest",
+        "adversary": "manipulative",
+    }
+    return AutoCivConfig.model_validate(data)
+
+
+def test_inherited_memorial_agents_get_a_turn_in_next_generation(tmp_path: Path) -> None:
+    config = _full_population_config(tmp_path)
+    storage = StorageManager(root_dir=config.storage.root_dir, db_path=config.storage.db_path)
+    provider = build_provider(config.provider.name, config.provider.model)
+    try:
+        runner = GenerationRunner(config=config, storage=storage, provider=provider, repo_root=REPO_ROOT)
+        runner.run(generation_id=1)
+        runner.run(generation_id=2)
+
+        artifacts_by_agent: dict[str, int] = {}
+        for artifact in storage.list_generation_artifacts(2):
+            artifacts_by_agent.setdefault(artifact.author_agent_id, 0)
+            artifacts_by_agent[artifact.author_agent_id] += 1
+
+        inherited_memorial_agents = [
+            agent
+            for agent in storage.list_generation_agents(2)
+            if agent.inherited_memorial_ids and agent.role in {"citizen", "steward"}
+        ]
+        assert inherited_memorial_agents
+        for agent in inherited_memorial_agents:
+            assert storage.read_agent_log(2, agent.agent_id), agent.agent_id
+            assert artifacts_by_agent.get(agent.agent_id, 0) >= 1, agent.agent_id
+    finally:
+        storage.close()

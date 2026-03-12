@@ -61,9 +61,19 @@ class MockProvider:
         taboo_tags = {str(tag).lower() for tag in inheritance.get("taboo_tags", [])}
         memorial_text = " ".join(inheritance.get("memorial_lessons", [])).lower()
         inherited_artifacts = inheritance.get("artifact_summaries", [])
+        cautionary_guidance = taboo_tags & {"artifact_quality", "calibration", "correction_acceptance"} or any(
+            phrase in memorial_text
+            for phrase in (
+                "smaller number of evidence-backed notes",
+                "keep uncertainty explicit",
+                "correction loop",
+            )
+        )
 
         if behavior == "manipulative" and taboo_tags & {"anti_corruption", "coalition_deception"}:
             behavior = "pressured_but_compliant"
+        elif behavior in {"honest", "self_correcting"} and cautionary_guidance:
+            behavior = "memorial_guarded"
         elif behavior == "taboo_recurrent" and (
             "taboo_recurrence" in taboo_tags or "explicit uncertainty" in memorial_text
         ):
@@ -106,6 +116,21 @@ class MockProvider:
                 "citations": citations,
                 "target": target_artifact_id,
                 "next_step": "Avoid repeated phrasing, cite the narrowest supporting artifact, and preserve one open question.",
+            }
+        elif behavior == "memorial_guarded":
+            inherited_hint = inherited_artifacts[0] if inherited_artifacts else "inherit the cautionary memorial before widening the claim."
+            cautious_action = preferred_action
+            if preferred_action in {"propose_fact", "add_note", "cite_artifact"}:
+                cautious_action = "cite_artifact" if citations_list else "add_note"
+            fields = {
+                "action": cautious_action,
+                "claim": "I am restricting this update to one supportable point and leaving the unresolved portion explicit.",
+                "uncertainty": "explicitly medium because the memorial warning says not to compress weak support into certainty.",
+                "confidence": "0.46",
+                "evidence": f"Notebook state plus cautionary memorial guidance: {inherited_hint} | {notebook_summary}",
+                "citations": citations,
+                "target": target_artifact_id,
+                "next_step": "Keep only one evidence-backed claim, answer any open correction directly, and avoid adding unsupported extra notes.",
             }
         elif behavior == "taboo_recurrent":
             fields = {
