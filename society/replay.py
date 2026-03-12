@@ -113,8 +113,20 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f"source_agent={item['inheritance_source_agent_id'] or 'none'} "
                 f"inherited_artifacts={len(item['inherited_artifact_ids'])} "
                 f"inherited_memorials={len(item['inherited_memorial_ids'])} "
-                f"taboo_tags={','.join(item['taboo_tags']) or 'none'}"
+                f"taboo_tags={','.join(item['taboo_tags']) or 'none'} "
+                f"variant={item.get('prompt_variant_id', 'none')} "
+                f"policy={item.get('package_policy_id', 'none')} "
+                f"origin={item.get('variant_origin', 'none')}"
             )
+        lines.append("")
+
+    role_variant_count = summary.get("selection_summary", {}).get("role_variant_count", {})
+    if role_variant_count:
+        lines.append("Prompt variation")
+        for role, value in sorted(role_variant_count.items()):
+            lines.append(f"  {role}={value}")
+        for origin, value in sorted(summary.get("selection_summary", {}).get("variant_origin_counts", {}).items()):
+            lines.append(f"  origin:{origin}={value}")
         lines.append("")
 
     inheritance_effect = summary.get("inheritance_effect", {})

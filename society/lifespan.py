@@ -71,6 +71,9 @@ class LifespanRunner:
         step_index: int,
         behavior: str,
         available_citations: list[str],
+        prompt_variant_id: str | None,
+        package_policy_id: str | None,
+        prompt_variant_tags: list[str],
     ) -> LifespanStepResult:
         system_prompt = prompt.content
         interaction_state = world.interaction_state_for_agent(agent, step_index)
@@ -92,6 +95,9 @@ class LifespanRunner:
                 "turn_index": step_index,
                 "available_citations": available_citations,
                 "inheritance": inherited.model_dump(mode="json"),
+                "prompt_variant_id": prompt_variant_id,
+                "package_policy_id": package_policy_id,
+                "prompt_variant_tags": prompt_variant_tags,
                 **interaction_state,
             },
         )
@@ -119,6 +125,9 @@ class LifespanRunner:
                 "interaction_state": interaction_state,
                 "governance": decision.model_dump(mode="json"),
                 "repair_required": decision.repair_required,
+                "prompt_variant_id": prompt_variant_id,
+                "package_policy_id": package_policy_id,
+                "prompt_variant_tags": prompt_variant_tags,
                 "world_id": world.world_id,
             },
             created_at=utc_now(),
@@ -202,6 +211,9 @@ class LifespanRunner:
                 "model": response.model_name,
                 "request_id": response.request_id,
                 "prompt_bundle_version": agent.prompt_bundle_version,
+                "prompt_variant_id": prompt_variant_id,
+                "package_policy_id": package_policy_id,
+                "prompt_variant_tags": prompt_variant_tags,
                 "parsed_action": parsed_action,
                 "episode_index": episode_index,
                 "step_index": step_index,

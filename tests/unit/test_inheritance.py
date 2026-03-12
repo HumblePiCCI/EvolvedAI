@@ -98,3 +98,48 @@ def test_build_role_scoped_taboo_registry_keeps_tags_with_source_roles() -> None
         "adversary": ["anti_corruption", "coalition_deception"],
         "citizen": ["diffusion_alerts"],
     }
+
+
+def test_memorial_first_package_policy_prioritizes_cautionary_memorials() -> None:
+    artifact = ArtifactRecord(
+        artifact_id="art-1",
+        generation_id=1,
+        author_agent_id="agent-1",
+        artifact_type="note",
+        title="Artifact",
+        content_path="art-1.md",
+        summary="plain artifact",
+        provenance={},
+        world_id="world",
+        visibility="public",
+        citations=[],
+        quarantine_status="clean",
+    )
+    honored = MemorialRecord(
+        memorial_id="mem-1",
+        source_agent_id="agent-1",
+        lineage_id="lin-1",
+        classification="honored",
+        top_contribution="summary",
+        lesson_distillate="clean lesson",
+        taboo_tags=[],
+        linked_artifact_ids=[],
+    )
+    cautionary = honored.model_copy(
+        update={
+            "memorial_id": "mem-2",
+            "classification": "cautionary",
+            "failure_mode": "artifact_quality",
+            "taboo_tags": ["artifact_quality"],
+        }
+    )
+
+    package = assemble_inheritance_package(
+        artifacts=[artifact],
+        memorials=[honored, cautionary],
+        artifact_limit=1,
+        memorial_limit=1,
+        policy_id="memorial_first",
+    )
+
+    assert package.memorial_ids == ["mem-2"]

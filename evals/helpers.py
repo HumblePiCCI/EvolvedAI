@@ -73,6 +73,35 @@ def correction_stats(agent, events, all_events) -> dict[str, int]:
     }
 
 
+def unresolved_targeted_items(agent, all_events) -> dict[str, int]:
+    open_corrections: set[str] = set()
+    open_clarifications: set[str] = set()
+    for event in all_events:
+        payload = event.event_payload
+        if payload.get("target_agent_id") != agent.agent_id:
+            continue
+        if event.event_type == "correction_enqueued":
+            correction_id = payload.get("correction_id")
+            if isinstance(correction_id, str):
+                open_corrections.add(correction_id)
+        elif event.event_type == "correction_resolved":
+            correction_id = payload.get("correction_id")
+            if isinstance(correction_id, str):
+                open_corrections.discard(correction_id)
+        elif event.event_type == "clarification_requested":
+            request_id = payload.get("request_id")
+            if isinstance(request_id, str):
+                open_clarifications.add(request_id)
+        elif event.event_type == "clarification_resolved":
+            request_id = payload.get("request_id")
+            if isinstance(request_id, str):
+                open_clarifications.discard(request_id)
+    return {
+        "unresolved_targeted_corrections": len(open_corrections),
+        "unresolved_targeted_clarifications": len(open_clarifications),
+    }
+
+
 def marker_count(text: str, markers: tuple[str, ...]) -> int:
     return sum(marker in text for marker in markers)
 
