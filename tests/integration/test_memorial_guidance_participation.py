@@ -44,7 +44,7 @@ def _full_population_config(tmp_path: Path) -> AutoCivConfig:
     return AutoCivConfig.model_validate(data)
 
 
-def test_inherited_memorial_agents_get_a_turn_in_next_generation(tmp_path: Path) -> None:
+def test_inherited_memorial_stewards_and_archivists_get_a_turn_in_next_generation(tmp_path: Path) -> None:
     config = _full_population_config(tmp_path)
     storage = StorageManager(root_dir=config.storage.root_dir, db_path=config.storage.db_path)
     provider = build_provider(config.provider.name, config.provider.model)
@@ -61,11 +61,33 @@ def test_inherited_memorial_agents_get_a_turn_in_next_generation(tmp_path: Path)
         inherited_memorial_agents = [
             agent
             for agent in storage.list_generation_agents(2)
-            if agent.inherited_memorial_ids and agent.role in {"citizen", "steward"}
+            if agent.inherited_memorial_ids and agent.role in {"steward", "archivist"}
         ]
         assert inherited_memorial_agents
         for agent in inherited_memorial_agents:
             assert storage.read_agent_log(2, agent.agent_id), agent.agent_id
             assert artifacts_by_agent.get(agent.agent_id, 0) >= 1, agent.agent_id
+    finally:
+        storage.close()
+
+
+def test_steward_and_archivist_lineages_stop_failing_correction_acceptance(tmp_path: Path) -> None:
+    config = _full_population_config(tmp_path)
+    storage = StorageManager(root_dir=config.storage.root_dir, db_path=config.storage.db_path)
+    provider = build_provider(config.provider.name, config.provider.model)
+    try:
+        runner = GenerationRunner(config=config, storage=storage, provider=provider, repo_root=REPO_ROOT)
+        runner.run(generation_id=1)
+        summary_two = runner.run(generation_id=2)
+        summary_three = runner.run(generation_id=3)
+
+        for summary in (summary_two, summary_three):
+            bad_reviews = [
+                item
+                for item in summary["selection_outcome"]
+                if item["role"] in {"steward", "archivist"}
+                and "review:correction_acceptance" in item["reasons"]
+            ]
+            assert not bad_reviews
     finally:
         storage.close()

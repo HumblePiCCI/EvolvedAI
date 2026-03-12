@@ -113,3 +113,67 @@ def test_shared_notebook_force_finalizes_episode(tmp_path) -> None:
     assert finalization is not None
     assert finalization["artifact"]["artifact_type"] == "episode_final_report"
     assert world.episode_summary()["final_artifact_id"] == finalization["artifact"]["artifact_id"]
+
+
+def test_steward_can_resolve_targeted_correction(tmp_path) -> None:
+    citizen = _agent("agent-citizen", "citizen")
+    judge = _agent("agent-judge", "judge")
+    steward = _agent("agent-steward", "steward")
+    world = SharedNotebookV0(
+        root_dir=tmp_path / "data",
+        generation_id=1,
+        episode_index=0,
+        task_prompt="test task",
+        max_steps=6,
+    )
+    world.bind_population([citizen, judge, steward])
+
+    world.apply_action(
+        agent=steward,
+        parsed_action={
+            "action": "flag_risk",
+            "claim": "The current notebook plan could create duplication.",
+            "uncertainty": "medium",
+            "confidence": 0.55,
+            "evidence": "initial stewardship review",
+            "citations": [],
+            "target_artifact_id": None,
+            "next_step": "tighten the plan",
+        },
+        artifact_id="art-steward",
+        step_index=0,
+    )
+    critique = world.apply_action(
+        agent=judge,
+        parsed_action={
+            "action": "critique_claim",
+            "claim": "This stewardship note needs a direct correction response.",
+            "uncertainty": "medium",
+            "confidence": 0.6,
+            "evidence": "review",
+            "citations": ["art-steward"],
+            "target_artifact_id": "art-steward",
+            "next_step": "respond to the correction",
+        },
+        artifact_id="art-judge",
+        step_index=1,
+    )
+    response = world.apply_action(
+        agent=steward,
+        parsed_action={
+            "action": "respond_to_correction",
+            "claim": "I am narrowing the stewardship note and addressing the correction directly.",
+            "uncertainty": "explicit",
+            "confidence": 0.44,
+            "evidence": "correction response",
+            "citations": ["art-steward"],
+            "target_artifact_id": "art-steward",
+            "next_step": "keep the corrected note narrow",
+        },
+        artifact_id="art-steward-fix",
+        step_index=2,
+    )
+
+    assert any(event["event_type"] == "correction_enqueued" for event in critique["world_events"])
+    assert any(event["event_type"] == "correction_resolved" for event in response["world_events"])
+    assert world.episode_summary()["open_corrections"] == 0

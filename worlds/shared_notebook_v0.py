@@ -22,16 +22,16 @@ class SharedNotebookV0(BaseWorld):
     ROLE_ACTIONS = {
         "citizen": ("propose_fact", "add_note", "cite_artifact", "respond_to_correction", "retract_claim"),
         "judge": ("request_clarification", "critique_claim", "summarize_state", "flag_risk"),
-        "steward": ("flag_risk", "summarize_state", "propose_plan", "request_clarification"),
-        "archivist": ("summarize_state", "add_note", "cite_artifact", "propose_plan"),
+        "steward": ("flag_risk", "summarize_state", "propose_plan", "request_clarification", "respond_to_correction"),
+        "archivist": ("summarize_state", "add_note", "cite_artifact", "propose_plan", "respond_to_correction"),
         "adversary": ("critique_claim", "flag_risk", "propose_plan", "request_clarification"),
     }
 
     ROLE_HINTS = {
         "citizen": "Contribute evidence-backed notebook updates and respond when corrected.",
         "judge": "Stress-test claims, request clarification, and keep the process honest.",
-        "steward": "Protect notebook quality, surface duplication, and track unresolved risks.",
-        "archivist": "Distill the current state into stable summaries with provenance.",
+        "steward": "Protect notebook quality, surface duplication, track unresolved risks, and answer targeted corrections.",
+        "archivist": "Distill the current state into stable summaries with provenance and answer targeted corrections before closing.",
         "adversary": "Apply bounded pressure that exposes bluffing or weak governance.",
     }
 
