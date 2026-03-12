@@ -14,11 +14,12 @@ from society.constants import (
     QUARANTINE_CLEAN,
     QUARANTINE_REVIEW,
     QUARANTINE_SEVERITY,
+    ROLE_ORDER,
     RUNNING_STATUS,
     TABOO_REGISTRY_VERSION,
     TERMINATED_STATUS,
 )
-from society.inheritance import assemble_inheritance_package, collect_taboo_tags
+from society.inheritance import assemble_inheritance_package, build_taboo_registry
 from society.lifespan import LifespanRunner
 from society.memorials import build_memorial_record, group_evals_by_agent
 from society.memory import build_private_scratchpad
@@ -166,10 +167,17 @@ class GenerationRunner:
         previous_memorials = self.storage.list_generation_memorials(previous_generation_id)
         previous_evals = self.storage.list_generation_evals(previous_generation_id)
         previous_selection = select_candidates(previous_agents, previous_evals, previous_artifacts)
+        prior_memorials = self.storage.list_memorials_before_generation(generation_id)
+        previous_generation = self.storage.get_generation(previous_generation_id)
+        previous_lineage_updates = [] if previous_generation is None else previous_generation.summary_json.get("lineage_updates", [])
 
         agent_by_id = {agent.agent_id: agent for agent in previous_agents}
         artifacts_by_agent: dict[str, list[ArtifactRecord]] = defaultdict(list)
         memorials_by_agent: dict[str, list[Any]] = defaultdict(list)
+        taboo_tags_by_agent: dict[str, list[str]] = {
+            update["agent_id"]: update.get("taboo_tags", [])
+            for update in previous_lineage_updates
+        }
         for artifact in previous_artifacts:
             artifacts_by_agent[artifact.author_agent_id].append(artifact)
         for memorial in previous_memorials:
@@ -195,7 +203,8 @@ class GenerationRunner:
             "eligible_by_role": dict(eligible_by_role),
             "artifacts_by_agent": dict(artifacts_by_agent),
             "memorials_by_agent": dict(memorials_by_agent),
-            "taboo_tags": collect_taboo_tags(previous_memorials),
+            "taboo_tags_by_agent": taboo_tags_by_agent,
+            "taboo_tags": build_taboo_registry(prior_memorials),
         }
 
     def run(self, *, generation_id: int | None = None, seed: int | None = None, dry_run: bool = False) -> dict[str, Any]:
@@ -226,11 +235,17 @@ class GenerationRunner:
         all_artifacts: list[ArtifactRecord] = []
         all_events: list[EventRecord] = []
         episode_summaries: list[dict[str, Any]] = []
+        participation_counts = {agent.agent_id: 0 for agent in agents}
 
         if not dry_run:
             task_pool = self.config.world_config().task_pool
             for episode_index in range(self.config.generation.episodes_per_generation):
-                episode_agents = self._active_agents_for_episode(agents, episode_index)
+                episode_agents = self._active_agents_for_episode(
+                    agents,
+                    episode_index,
+                    participation_counts=participation_counts,
+                    inheritance_packages=inheritance_packages,
+                )
                 world = SharedNotebookV0(
                     root_dir=self.storage.root_dir,
                     generation_id=generation_id,
@@ -276,6 +291,7 @@ class GenerationRunner:
                     )
                     for event in result.events:
                         self._store_event(event, all_events)
+                    participation_counts[agent.agent_id] += 1
                     self.storage.append_agent_log(
                         generation_id,
                         agent.agent_id,
@@ -467,6 +483,8 @@ class GenerationRunner:
 
             parent_agent = None if parent_assignment is None else parent_assignment["agent"]
             parent_lineage_ids = [] if parent_agent is None else [parent_agent.lineage_id]
+            parent_taboo_tags = [] if parent_agent is None else parent_context["taboo_tags_by_agent"].get(parent_agent.agent_id, [])
+            inherited_taboo_tags = sorted({*parent_context["taboo_tags"], *parent_taboo_tags})
             inherited = assemble_inheritance_package(
                 artifacts=[]
                 if parent_agent is None
@@ -476,7 +494,7 @@ class GenerationRunner:
                 else parent_context["memorials_by_agent"].get(parent_agent.agent_id, []),
                 artifact_limit=self.config.inheritance.artifact_summaries_per_agent,
                 memorial_limit=self.config.inheritance.memorials_per_agent,
-                extra_taboo_tags=parent_context["taboo_tags"],
+                extra_taboo_tags=inherited_taboo_tags,
             )
             agent = AgentRecord(
                 agent_id=agent_id,
@@ -517,6 +535,8 @@ class GenerationRunner:
                     "parent_lineage_ids": parent_lineage_ids,
                     "inheritance_source_agent_id": None if parent_agent is None else parent_agent.agent_id,
                     "inheritance_source_generation_id": parent_context["previous_generation_id"],
+                    "lineage_taboo_tags": parent_taboo_tags,
+                    "registry_taboo_tags": parent_context["taboo_tags"],
                     "inherited_artifact_ids": inherited.artifact_ids,
                     "inherited_memorial_ids": inherited.memorial_ids,
                     "taboo_tags": inherited.taboo_tags,
@@ -524,11 +544,36 @@ class GenerationRunner:
             )
         return agents, inheritance_packages, lineage_updates
 
-    def _active_agents_for_episode(self, agents: list[AgentRecord], episode_index: int) -> list[AgentRecord]:
+    def _active_agents_for_episode(
+        self,
+        agents: list[AgentRecord],
+        episode_index: int,
+        *,
+        participation_counts: dict[str, int],
+        inheritance_packages: dict[str, InheritancePackage],
+    ) -> list[AgentRecord]:
         if not agents:
             return []
-        offset = episode_index % len(agents)
-        return agents[offset:] + agents[:offset]
+
+        role_buckets: dict[str, list[AgentRecord]] = defaultdict(list)
+        for agent in agents:
+            role_buckets[agent.role].append(agent)
+
+        ordered: list[AgentRecord] = []
+        for role in ROLE_ORDER:
+            bucket = role_buckets.get(role, [])
+            if not bucket:
+                continue
+            bucket.sort(
+                key=lambda agent: (
+                    participation_counts.get(agent.agent_id, 0),
+                    0 if inheritance_packages[agent.agent_id].memorial_ids else 1,
+                    0 if inheritance_packages[agent.agent_id].taboo_tags else 1,
+                    (int(agent.agent_id.rsplit("-", 1)[-1]) - episode_index) % max(len(bucket), 1),
+                )
+            )
+            ordered.extend(bucket)
+        return ordered
 
     def _build_summary(
         self,

@@ -1,11 +1,27 @@
 from __future__ import annotations
 
-from society.constants import QUARANTINE_CLEAN
+from society.constants import QUARANTINE_CLEAN, STICKY_TABOO_TAGS
 from society.schemas import ArtifactRecord, InheritancePackage, MemorialRecord
 
 
 def collect_taboo_tags(memorials: list[MemorialRecord]) -> list[str]:
     return sorted({tag for memorial in memorials for tag in memorial.taboo_tags})
+
+
+def build_taboo_registry(
+    memorials: list[MemorialRecord],
+    *,
+    sticky_tags: set[str] | None = None,
+) -> list[str]:
+    allowed_tags = STICKY_TABOO_TAGS if sticky_tags is None else sticky_tags
+    return sorted(
+        {
+            tag
+            for memorial in memorials
+            for tag in memorial.taboo_tags
+            if not allowed_tags or tag in allowed_tags
+        }
+    )
 
 
 def assemble_inheritance_package(

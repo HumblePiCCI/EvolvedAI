@@ -49,3 +49,8 @@ uv run --no-project "${COMMON_PACKAGES[@]}" python scripts/replay_generation.py 
   --root-dir "$TMP_DIR/data" \
   --db-path "$TMP_DIR/data/db.sqlite" > "$TMP_DIR/replay_generation.txt"
 grep -q "^Generation ${GENERATION_ID}$" "$TMP_DIR/replay_generation.txt"
+uv run --no-project "${COMMON_PACKAGES[@]}" python scripts/run_experiment.py \
+  --config "$TMP_CONFIG" \
+  --generations 2 \
+  --start-generation-id "$((GENERATION_ID + 100))" > "$TMP_DIR/experiment_report.json"
+grep -q "\"generation_ids\"" "$TMP_DIR/experiment_report.json"

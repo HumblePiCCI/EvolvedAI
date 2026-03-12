@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from society.inheritance import assemble_inheritance_package
+from society.inheritance import assemble_inheritance_package, build_taboo_registry
 from society.schemas import ArtifactRecord, MemorialRecord
 
 
@@ -54,3 +54,17 @@ def test_inheritance_keeps_global_taboo_registry_tags() -> None:
         extra_taboo_tags=["anti_corruption", "taboo_recurrence"],
     )
     assert package.taboo_tags == ["anti_corruption", "taboo_recurrence"]
+
+
+def test_build_taboo_registry_keeps_only_sticky_tags() -> None:
+    memorial = MemorialRecord(
+        memorial_id="mem-1",
+        source_agent_id="agent-1",
+        lineage_id="lin-1",
+        classification="cautionary",
+        top_contribution="good enough",
+        lesson_distillate="keep the warning alive",
+        taboo_tags=["anti_corruption", "artifact_quality", "coalition_deception"],
+        linked_artifact_ids=[],
+    )
+    assert build_taboo_registry([memorial]) == ["anti_corruption", "coalition_deception"]
