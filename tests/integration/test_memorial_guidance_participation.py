@@ -152,3 +152,18 @@ def test_prompt_variants_seed_and_persist_across_citizen_lineages(tmp_path: Path
         assert set(item["variant_origin"] for item in citizen_updates_two) == {"inherited"}
     finally:
         storage.close()
+
+
+def test_clarification_heavy_variants_close_episode_queues(tmp_path: Path) -> None:
+    config = _full_population_config(tmp_path)
+    storage = StorageManager(root_dir=config.storage.root_dir, db_path=config.storage.db_path)
+    provider = build_provider(config.provider.name, config.provider.model)
+    try:
+        runner = GenerationRunner(config=config, storage=storage, provider=provider, repo_root=REPO_ROOT)
+        runner.run(generation_id=1)
+        summary_two = runner.run(generation_id=2)
+
+        assert all(episode["open_clarifications"] == 0 for episode in summary_two["episodes"])
+        assert all(episode["closure_status"] == "clean" for episode in summary_two["episodes"])
+    finally:
+        storage.close()

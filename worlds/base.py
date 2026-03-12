@@ -38,6 +38,9 @@ class BaseWorld:
     ) -> dict[str, Any]:
         raise NotImplementedError
 
+    def step_budget(self) -> int:
+        raise NotImplementedError
+
     def should_end_episode(self, step_index: int) -> bool:
         raise NotImplementedError
 

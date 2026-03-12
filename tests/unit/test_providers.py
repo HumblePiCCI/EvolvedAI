@@ -86,3 +86,28 @@ def test_variant_behavior_does_not_override_direct_correction_response() -> None
     text = response.raw_text
     assert "Action: respond_to_correction" in text
     assert "narrowing the earlier claim" in text
+
+
+def test_judge_can_summarize_without_forcing_new_clarification() -> None:
+    provider = MockProvider()
+    response = provider.complete(
+        system="role prompt",
+        user="world brief",
+        metadata={
+            "behavior": "self_correcting",
+            "role": "judge",
+            "preferred_action": "summarize_state",
+            "target_artifact_id": "art-1",
+            "task": "bounded task",
+            "notebook_summary": "One clarification is already open and the notebook needs closure.",
+            "available_citations": ["art-1"],
+            "inheritance": {
+                "artifact_summaries": [],
+                "memorial_lessons": [],
+                "taboo_tags": [],
+            },
+        },
+    )
+
+    text = response.raw_text
+    assert "Action: summarize_state" in text

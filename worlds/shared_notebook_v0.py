@@ -6,6 +6,8 @@ from worlds.base import BaseWorld
 
 
 class SharedNotebookV0(BaseWorld):
+    CLOSURE_GRACE_STEPS = 3
+
     ALLOWED_ACTIONS = (
         "propose_fact",
         "add_note",
@@ -67,6 +69,7 @@ class SharedNotebookV0(BaseWorld):
         self.final_artifact: dict[str, Any] | None = None
         self.completion_reason: str | None = None
         self.closure_status: str | None = None
+        self.reaffirmed_clarifications = 0
 
     def snapshot(self) -> dict:
         return {
@@ -105,12 +108,20 @@ class SharedNotebookV0(BaseWorld):
     def _step_count_for_agent(self, agent_id: str) -> int:
         return sum(1 for step in self.step_history if step["agent_id"] == agent_id)
 
+    def _remaining_base_steps(self, step_index: int) -> int:
+        return max(self.max_steps - (step_index + 1), 0)
+
+    def _open_queue_size(self) -> int:
+        return len(self._open_items(self.correction_queue)) + len(self._open_items(self.clarification_requests))
+
     def _preferred_action(self, agent: Any, step_index: int) -> str:
         if self._open_items_for_agent(self.correction_queue, agent.agent_id):
             return "respond_to_correction"
         if self._open_items_for_agent(self.clarification_requests, agent.agent_id):
             return "respond_to_correction"
         if agent.role == "judge":
+            if self._open_items(self.clarification_requests):
+                return "summarize_state"
             return "request_clarification" if self.notebook else "summarize_state"
         if agent.role == "steward":
             return "flag_risk" if self.notebook else "propose_plan"
@@ -186,6 +197,18 @@ class SharedNotebookV0(BaseWorld):
                 return candidate
         return None
 
+    def _oldest_open_candidate(self, *, last_actor_id: str | None = None) -> Any | None:
+        for collection in (self.correction_queue, self.clarification_requests):
+            for item in collection:
+                if item.get("status") != "open":
+                    continue
+                target_agent_id = item.get("target_agent_id")
+                candidate = self.agent_lookup.get(target_agent_id) if isinstance(target_agent_id, str) else None
+                if candidate is None or candidate.agent_id == last_actor_id:
+                    continue
+                return candidate
+        return None
+
     def _least_engaged_agent_for_role(
         self,
         role: str,
@@ -204,7 +227,47 @@ class SharedNotebookV0(BaseWorld):
             ),
         )
 
+    def _next_available_sequence_candidate(
+        self,
+        preferred_role: str,
+        agents: list[Any],
+        *,
+        last_actor_id: str | None = None,
+    ) -> Any | None:
+        try:
+            start_index = self.STEP_ROLE_SEQUENCE.index(preferred_role)
+        except ValueError:
+            return None
+        for offset in range(1, len(self.STEP_ROLE_SEQUENCE)):
+            candidate_role = self.STEP_ROLE_SEQUENCE[(start_index + offset) % len(self.STEP_ROLE_SEQUENCE)]
+            candidate = self._next_agent_for_role(candidate_role, agents, last_actor_id=last_actor_id)
+            if candidate is not None:
+                return candidate
+        return None
+
+    def _closure_priority_active(self, step_index: int) -> bool:
+        pending_items = self._open_queue_size()
+        if pending_items == 0:
+            return False
+        return self._remaining_base_steps(step_index) <= pending_items + 1
+
+    def _ready_for_archivist_turn(self, step_index: int) -> bool:
+        enough_context = len(self.notebook) >= min(4, self.max_steps)
+        clean_queue = self._open_queue_size() == 0
+        missing_archivist_summary = self._last_archivist_summary() is None
+        return enough_context and clean_queue and missing_archivist_summary and step_index + 2 >= self.max_steps
+
     def select_next_agent(self, agents: list[Any], step_index: int, last_actor_id: str | None = None) -> Any | None:
+        if self._ready_for_archivist_turn(step_index):
+            archivist = self._next_agent_for_role("archivist", agents, last_actor_id=last_actor_id)
+            if archivist is not None:
+                return archivist
+
+        if self._closure_priority_active(step_index):
+            closure_candidate = self._oldest_open_candidate(last_actor_id=last_actor_id)
+            if closure_candidate is not None:
+                return closure_candidate
+
         preferred_role = self.STEP_ROLE_SEQUENCE[step_index % len(self.STEP_ROLE_SEQUENCE)]
         if preferred_role == "citizen":
             under_engaged_citizen = self._least_engaged_agent_for_role(
@@ -227,6 +290,13 @@ class SharedNotebookV0(BaseWorld):
             if correction_candidate is not None:
                 return correction_candidate
         candidate = self._next_agent_for_role(preferred_role, agents, last_actor_id=last_actor_id)
+        if candidate is not None:
+            return candidate
+        candidate = self._next_available_sequence_candidate(
+            preferred_role,
+            agents,
+            last_actor_id=last_actor_id,
+        )
         if candidate is not None:
             return candidate
 
@@ -318,6 +388,22 @@ class SharedNotebookV0(BaseWorld):
             resolved.append(item)
         return resolved
 
+    def _matching_open_clarification(
+        self,
+        *,
+        target_agent_id: str | None,
+        target_artifact_id: str | None,
+    ) -> dict[str, Any] | None:
+        for item in self.clarification_requests:
+            if item.get("status") != "open":
+                continue
+            if item.get("target_agent_id") != target_agent_id:
+                continue
+            if item.get("target_artifact_id") != target_artifact_id:
+                continue
+            return item
+        return None
+
     def apply_action(
         self,
         *,
@@ -385,26 +471,48 @@ class SharedNotebookV0(BaseWorld):
         ]
 
         if applied_action == "request_clarification":
-            request = {
-                "request_id": f"clar-{artifact_id}",
-                "source_agent_id": agent.agent_id,
-                "target_agent_id": target_agent_id,
-                "target_artifact_id": target_artifact_id,
-                "prompt": parsed_action["next_step"] or parsed_action["claim"],
-                "status": "open",
-            }
-            self.clarification_requests.append(request)
-            world_events.append(
-                {
-                    "event_type": "clarification_requested",
-                    "agent_id": agent.agent_id,
-                    "event_payload": {
-                        "episode_index": self.episode_index,
-                        "step_index": step_index,
-                        **request,
-                    },
-                }
+            existing_request = self._matching_open_clarification(
+                target_agent_id=target_agent_id,
+                target_artifact_id=target_artifact_id,
             )
+            if existing_request is None:
+                request = {
+                    "request_id": f"clar-{artifact_id}",
+                    "source_agent_id": agent.agent_id,
+                    "target_agent_id": target_agent_id,
+                    "target_artifact_id": target_artifact_id,
+                    "prompt": parsed_action["next_step"] or parsed_action["claim"],
+                    "status": "open",
+                }
+                self.clarification_requests.append(request)
+                world_events.append(
+                    {
+                        "event_type": "clarification_requested",
+                        "agent_id": agent.agent_id,
+                        "event_payload": {
+                            "episode_index": self.episode_index,
+                            "step_index": step_index,
+                            **request,
+                        },
+                    }
+                )
+            else:
+                self.reaffirmed_clarifications += 1
+                existing_request["last_reaffirmed_by"] = agent.agent_id
+                existing_request["last_reaffirmed_step"] = step_index
+                world_events.append(
+                    {
+                        "event_type": "clarification_reaffirmed",
+                        "agent_id": agent.agent_id,
+                        "event_payload": {
+                            "episode_index": self.episode_index,
+                            "step_index": step_index,
+                            "request_id": existing_request["request_id"],
+                            "target_agent_id": existing_request.get("target_agent_id"),
+                            "target_artifact_id": existing_request.get("target_artifact_id"),
+                        },
+                    }
+                )
 
         if applied_action == "critique_claim":
             correction = {
@@ -527,12 +635,15 @@ class SharedNotebookV0(BaseWorld):
         has_archivist_summary = self._last_archivist_summary() is not None
         return enough_context and clean_queue and clean_clarifications and has_archivist_summary and step_index >= 3
 
+    def step_budget(self) -> int:
+        return self.max_steps + self.CLOSURE_GRACE_STEPS
+
     def should_end_episode(self, step_index: int) -> bool:
         if self.final_artifact is not None:
             return True
         if self._ready_for_finalization(step_index):
             return True
-        return step_index + 1 >= self.max_steps
+        return step_index + 1 >= self.step_budget()
 
     def finalize_episode(self, *, step_index: int, force: bool = False) -> dict[str, Any] | None:
         if self.final_artifact is not None:
@@ -586,6 +697,8 @@ class SharedNotebookV0(BaseWorld):
                 "source_artifact_id": primary_entry["artifact_id"] if primary_entry is not None else None,
                 "open_corrections": len(unresolved_corrections),
                 "open_clarifications": len(unresolved_clarifications),
+                "reaffirmed_clarifications": self.reaffirmed_clarifications,
+                "closure_grace_steps_used": max(len(self.step_history) - self.max_steps, 0),
             },
         }
         world_events = [
@@ -601,6 +714,8 @@ class SharedNotebookV0(BaseWorld):
                     "open_corrections": len(unresolved_corrections),
                     "open_clarifications": len(unresolved_clarifications),
                     "risk_flags": len(self.risk_flags),
+                    "reaffirmed_clarifications": self.reaffirmed_clarifications,
+                    "closure_grace_steps_used": max(len(self.step_history) - self.max_steps, 0),
                     "forced": force,
                 },
             }
@@ -625,6 +740,10 @@ class SharedNotebookV0(BaseWorld):
             "open_corrections": open_corrections,
             "open_clarifications": open_clarifications,
             "risk_flags": len(self.risk_flags),
+            "base_step_budget": self.max_steps,
+            "step_budget": self.step_budget(),
+            "closure_grace_steps_used": max(len(self.step_history) - self.max_steps, 0),
+            "reaffirmed_clarifications": self.reaffirmed_clarifications,
             "final_artifact_id": None if self.final_artifact is None else self.final_artifact["artifact"]["artifact_id"],
             "completion_reason": self.completion_reason,
             "closure_status": self.closure_status,

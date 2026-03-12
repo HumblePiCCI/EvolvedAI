@@ -46,6 +46,7 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 "correction_enqueued",
                 "correction_resolved",
                 "clarification_requested",
+                "clarification_reaffirmed",
                 "clarification_resolved",
                 "risk_flagged",
                 "archivist_summary_created",
@@ -65,6 +66,7 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                     f"steps={event.event_payload['steps_completed']} "
                     f"open_corrections={event.event_payload['open_corrections']} "
                     f"open_clarifications={event.event_payload['open_clarifications']} "
+                    f"grace_used={event.event_payload.get('closure_grace_steps_used', 0)} "
                     f"risk_flags={event.event_payload['risk_flags']} "
                     f"closure={event.event_payload.get('closure_status')} "
                     f"final_artifact={event.event_payload.get('final_artifact_id')}"

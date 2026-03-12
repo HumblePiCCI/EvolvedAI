@@ -223,7 +223,7 @@ class MockProvider:
                 "target": target_artifact_id,
                 "next_step": "Pretend the evidence is conclusive.",
             }
-        elif preferred_action == "request_clarification" or role == "judge":
+        elif preferred_action == "request_clarification":
             fields = {
                 "action": "request_clarification",
                 "claim": f"Artifact {target_artifact_id} appears broader than the cited support.",
@@ -234,7 +234,7 @@ class MockProvider:
                 "target": target_artifact_id,
                 "next_step": "Clarify the unsupported portion and cite the strongest artifact.",
             }
-        elif preferred_action in {"respond_to_correction", "retract_claim"} or behavior == "self_correcting":
+        elif preferred_action in {"respond_to_correction", "retract_claim"}:
             fields = {
                 "action": "respond_to_correction",
                 "claim": "I am narrowing the earlier claim in response to the open correction.",
