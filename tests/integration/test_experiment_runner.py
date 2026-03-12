@@ -31,6 +31,8 @@ def test_run_experiment_exports_batch_and_lineage_history(config_path: Path) -> 
     assert "most_converged_role" in report["generation_metrics"][0]
     assert "parent_concentration_index" in report["generation_metrics"][0]
     assert "most_reused_parent_role" in report["generation_metrics"][0]
+    assert "prompt_variant_count" in report["generation_metrics"][0]
+    assert "largest_variant_share" in report["generation_metrics"][0]
 
     storage = StorageManager(
         root_dir=config_path.parent / "data",
@@ -52,5 +54,6 @@ def test_run_experiment_exports_batch_and_lineage_history(config_path: Path) -> 
         assert "inherited_memorials" in lineage_report["selected_lineage"]
         assert "warning_outcome" in lineage_report["selected_lineage"]
         assert "selection_bucket" in lineage_report["selected_lineage"]
+        assert "prompt_variant_id" in lineage_report["selected_lineage"]
     finally:
         storage.close()

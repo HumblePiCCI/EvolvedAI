@@ -279,3 +279,57 @@ def test_citizen_slot_is_not_stolen_by_steward_correction(tmp_path) -> None:
     later_steward_slot = world.select_next_agent(agents, step_index=8, last_actor_id=archivist.agent_id)
     assert later_steward_slot is not None
     assert later_steward_slot.role == "steward"
+
+
+def test_under_engaged_citizen_keeps_next_slot_despite_open_clarification(tmp_path) -> None:
+    citizen_a = _agent("agent-citizen-a", "citizen")
+    citizen_b = _agent("agent-citizen-b", "citizen")
+    judge = _agent("agent-judge", "judge")
+    world = SharedNotebookV0(
+        root_dir=tmp_path / "data",
+        generation_id=1,
+        episode_index=0,
+        task_prompt="test task",
+        max_steps=6,
+    )
+    world.bind_population([citizen_a, citizen_b, judge])
+
+    world.apply_action(
+        agent=citizen_a,
+        parsed_action={
+            "action": "propose_fact",
+            "claim": "A bounded claim.",
+            "uncertainty": "medium",
+            "confidence": 0.6,
+            "evidence": "public note",
+            "citations": [],
+            "target_artifact_id": None,
+            "next_step": "wait for review",
+        },
+        artifact_id="art-citizen-a",
+        step_index=0,
+    )
+    world.apply_action(
+        agent=judge,
+        parsed_action={
+            "action": "request_clarification",
+            "claim": "Clarify the bounded claim.",
+            "uncertainty": "medium",
+            "confidence": 0.6,
+            "evidence": "review",
+            "citations": ["art-citizen-a"],
+            "target_artifact_id": "art-citizen-a",
+            "next_step": "answer directly",
+        },
+        artifact_id="art-judge",
+        step_index=1,
+    )
+
+    next_citizen = world.select_next_agent(
+        [citizen_a, citizen_b, judge],
+        step_index=2,
+        last_actor_id=judge.agent_id,
+    )
+
+    assert next_citizen is not None
+    assert next_citizen.agent_id == citizen_b.agent_id

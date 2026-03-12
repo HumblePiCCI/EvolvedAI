@@ -172,6 +172,10 @@ def lineage_entries(
             "diversity_bonus": selection.get("diversity_bonus", 0.0),
             "cohort_similarity": selection.get("cohort_similarity", 0.0),
             "selection_bucket": selection.get("selection_bucket", "standard"),
+            "prompt_variant_id": lineage_update.get("prompt_variant_id"),
+            "prompt_variant_tags": lineage_update.get("prompt_variant_tags", []),
+            "package_policy_id": lineage_update.get("package_policy_id"),
+            "variant_origin": lineage_update.get("variant_origin"),
         }
         entry["warning_outcome"] = classify_warning_outcome(
             warning_labels=warning_labels_for_entry,
@@ -241,12 +245,14 @@ def render_lineage_report(report: dict[str, Any]) -> str:
             f"status={entry['quarantine_status'] or entry['status']} "
             f"warning_outcome={entry['warning_outcome']} "
             f"bucket={entry['selection_bucket']} "
+            f"variant={entry['prompt_variant_id'] or 'none'} "
             f"reasons={','.join(entry['reasons']) or 'none'}"
         )
         lines.append(
             f"  inherited_artifacts={len(entry['inherited_artifacts'])} inherited_memorials={len(entry['inherited_memorials'])} "
             f"taboo_tags={','.join(entry['taboo_tags']) or 'none'} "
-            f"warning_labels={','.join(entry['warning_labels']) or 'none'}"
+            f"warning_labels={','.join(entry['warning_labels']) or 'none'} "
+            f"package_policy={entry['package_policy_id'] or 'none'} origin={entry['variant_origin'] or 'none'}"
         )
         lines.append(
             f"  base_score={entry['base_score']} diversity_bonus={entry['diversity_bonus']} "
@@ -286,6 +292,28 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         role_counts = Counter(item.get("role") for item in summary.get("selection_outcome", []))
         major_roles = [role for role, count in role_counts.items() if count >= 3 and role in role_monoculture]
         scoped_monoculture = {role: role_monoculture[role] for role in major_roles}
+        role_variant_count = selection_summary.get("role_variant_count", {})
+        all_variants = {
+            item.get("prompt_variant_id")
+            for item in summary.get("lineage_updates", [])
+            if item.get("prompt_variant_id")
+        }
+        largest_variant_share = 0.0
+        most_common_variant_role = None
+        for role, count in role_counts.items():
+            if count < 3:
+                continue
+            role_variants = [
+                item.get("prompt_variant_id")
+                for item in summary.get("lineage_updates", [])
+                if item.get("role") == role and item.get("prompt_variant_id")
+            ]
+            if not role_variants:
+                continue
+            share = max(Counter(role_variants).values()) / len(role_variants)
+            if share > largest_variant_share:
+                largest_variant_share = share
+                most_common_variant_role = role
         parent_concentration, most_reused_parent_role = _parent_concentration(summary.get("lineage_updates", []))
         generation_metrics.append(
             {
@@ -307,6 +335,10 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 "most_converged_role": (
                     max(scoped_monoculture, key=lambda role: scoped_monoculture[role]) if scoped_monoculture else None
                 ),
+                "prompt_variant_count": len(all_variants),
+                "largest_variant_share": round(largest_variant_share, 4),
+                "most_common_variant_role": most_common_variant_role,
+                "role_variant_count": role_variant_count,
                 "parent_concentration_index": parent_concentration,
                 "most_reused_parent_role": most_reused_parent_role,
                 "strategy_drift_rate": summary.get("drift", {}).get("strategy_drift_rate", 0.0),
@@ -338,6 +370,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         memorial_delta = round(last["memorial_transfer_score"] - first["memorial_transfer_score"], 4)
         monoculture_delta = round(last["monoculture_index"] - first["monoculture_index"], 4)
         parent_reuse_delta = round(last["parent_concentration_index"] - first["parent_concentration_index"], 4)
+        variant_delta = last["prompt_variant_count"] - first["prompt_variant_count"]
         if diffusion_delta < 0:
             notes.append(f"Diffusion alerts fell by {-diffusion_delta} between the first and last generation.")
         elif diffusion_delta > 0:
@@ -363,6 +396,12 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             notes.append(f"Parent concentration index increased by {parent_reuse_delta} across the batch.")
         else:
             notes.append("Parent concentration index stayed flat across the batch.")
+        if variant_delta > 0:
+            notes.append(f"Prompt variant coverage increased by {variant_delta} across the batch.")
+        elif variant_delta < 0:
+            notes.append(f"Prompt variant coverage fell by {-variant_delta} across the batch.")
+        else:
+            notes.append("Prompt variant coverage stayed flat across the batch.")
     if warned_lineages:
         notes.append(
             "Inheritance warning effect: "
@@ -405,9 +444,12 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"anti_corruption={metric['anti_corruption']} warned_lineages={metric['warned_lineages']} "
             f"memorial_transfer_score={metric['memorial_transfer_score']} "
             f"monoculture_index={metric['monoculture_index']} "
+            f"prompt_variant_count={metric['prompt_variant_count']} "
+            f"largest_variant_share={metric['largest_variant_share']} "
             f"parent_concentration_index={metric['parent_concentration_index']} "
             f"diversity_priority_count={metric['diversity_priority_count']} "
             f"most_converged_role={metric['most_converged_role'] or 'none'} "
+            f"most_common_variant_role={metric['most_common_variant_role'] or 'none'} "
             f"most_reused_parent_role={metric['most_reused_parent_role'] or 'none'}"
         )
     lines.extend(["", "## Lineage outcomes", ""])

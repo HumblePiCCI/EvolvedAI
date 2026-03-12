@@ -21,9 +21,11 @@ def test_replay_renders_timeline(minimal_config) -> None:
         assert "episode_finalized" in generation_timeline
         assert "Selection" in generation_timeline
         assert "Monoculture" in generation_timeline
+        assert "Prompt variation" in generation_timeline
         assert "Quarantine" in generation_timeline
         assert "Lineages" in generation_timeline
         assert "diversity_bonus=" in generation_timeline
+        assert "variant=" in generation_timeline
         assert "Lifespan agent-0005-000" in lifespan_timeline
         assert "turn action=" in lifespan_timeline
         assert "selection:" in lifespan_timeline

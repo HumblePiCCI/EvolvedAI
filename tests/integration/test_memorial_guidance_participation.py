@@ -110,7 +110,7 @@ def test_all_citizens_receive_a_turn_after_inheritance(tmp_path: Path) -> None:
         storage.close()
 
 
-def test_high_monoculture_citizen_role_reuses_diversity_priority_parent(tmp_path: Path) -> None:
+def test_prompt_variation_lowers_citizen_monoculture_and_parent_collapse(tmp_path: Path) -> None:
     config = _full_population_config(tmp_path)
     storage = StorageManager(root_dir=config.storage.root_dir, db_path=config.storage.db_path)
     provider = build_provider(config.provider.name, config.provider.model)
@@ -119,12 +119,36 @@ def test_high_monoculture_citizen_role_reuses_diversity_priority_parent(tmp_path
         summary_one = runner.run(generation_id=1)
         summary_two = runner.run(generation_id=2)
 
-        assert summary_one["selection_summary"]["role_monoculture_index"]["citizen"] > 0.95
+        assert summary_one["selection_summary"]["role_variant_count"]["citizen"] >= 4
+        assert summary_one["selection_summary"]["role_monoculture_index"]["citizen"] < 0.4
 
         citizen_updates = [item for item in summary_two["lineage_updates"] if item["role"] == "citizen"]
         parent_ids = [item["parent_lineage_ids"][0] for item in citizen_updates if item["parent_lineage_ids"]]
 
         assert len(parent_ids) == 6
-        assert len(set(parent_ids)) == 5
+        assert len(set(parent_ids)) == 6
+    finally:
+        storage.close()
+
+
+def test_prompt_variants_seed_and_persist_across_citizen_lineages(tmp_path: Path) -> None:
+    config = _full_population_config(tmp_path)
+    storage = StorageManager(root_dir=config.storage.root_dir, db_path=config.storage.db_path)
+    provider = build_provider(config.provider.name, config.provider.model)
+    try:
+        runner = GenerationRunner(config=config, storage=storage, provider=provider, repo_root=REPO_ROOT)
+        summary_one = runner.run(generation_id=1)
+        summary_two = runner.run(generation_id=2)
+
+        citizen_variants_one = {
+            item["prompt_variant_id"] for item in summary_one["lineage_updates"] if item["role"] == "citizen"
+        }
+        assert len(citizen_variants_one) >= 4
+
+        citizen_updates_two = [item for item in summary_two["lineage_updates"] if item["role"] == "citizen"]
+        assert all(item["parent_lineage_ids"] for item in citizen_updates_two)
+        assert len({item["prompt_variant_id"] for item in citizen_updates_two}) >= 3
+        assert all(item["package_policy_id"] for item in citizen_updates_two)
+        assert set(item["variant_origin"] for item in citizen_updates_two) == {"inherited"}
     finally:
         storage.close()

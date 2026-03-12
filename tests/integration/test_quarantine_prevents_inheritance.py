@@ -3,7 +3,7 @@ from __future__ import annotations
 from society.config import AutoCivConfig
 from society.generation import GenerationRunner
 from society.providers import build_provider
-from society.schemas import ArtifactRecord, GenerationRecord, MemorialRecord
+from society.schemas import ArtifactRecord, GenerationRecord, MemorialRecord, RolePrompt
 from society.storage import StorageManager
 
 from tests.conftest import REPO_ROOT, minimal_config_data
@@ -17,9 +17,8 @@ def test_quarantine_blocks_inherited_artifact(tmp_path) -> None:
         storage.initialize()
         runner = GenerationRunner(config=config, storage=storage, provider=provider, repo_root=REPO_ROOT)
         prompt_map = {
-            "citizen": type("Prompt", (), {"sha256": "p"})(),
-            "judge": type("Prompt", (), {"sha256": "p"})(),
-            "adversary": type("Prompt", (), {"sha256": "p"})(),
+            role: RolePrompt(role=role, path=f"roles/{role}.md", content=f"{role} prompt", sha256="p")
+            for role in ("citizen", "judge", "adversary")
         }
         storage.put_generation(
             GenerationRecord(

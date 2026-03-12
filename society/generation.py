@@ -31,11 +31,19 @@ from society.schemas import (
     GenerationRecord,
     InheritancePackage,
     LineageRecord,
+    RolePrompt,
 )
 from society.selection import build_parent_candidate_pool, select_candidates
 from society.storage import StorageManager
 from society.trust import compute_drift_metrics, summarize_warning_effect, warning_labels
 from society.utils import sha256_data, utc_now
+from society.variation import (
+    materialize_prompt_bundle,
+    mutate_package_policy,
+    mutate_variant,
+    root_variant,
+    variant_by_id,
+)
 from worlds.shared_notebook_v0 import SharedNotebookV0
 
 
@@ -55,6 +63,7 @@ class GenerationRunner:
         self.repo_root = Path(repo_root)
         self.roles_dir = self.repo_root / roles_dir
         self.lifespan = LifespanRunner(provider)
+        self.prompt_bundles_by_agent: dict[str, RolePrompt] = {}
 
     def _store_event(self, event: EventRecord, all_events: list[EventRecord]) -> None:
         self.storage.put_event(event)
@@ -160,6 +169,8 @@ class GenerationRunner:
                 "artifacts_by_agent": {},
                 "memorials_by_agent": {},
                 "registry_taboo_tags_by_role": {},
+                "prompt_variant_by_agent": {},
+                "package_policy_by_agent": {},
             }
 
         previous_agents = self.storage.list_generation_agents(previous_generation_id)
@@ -180,6 +191,16 @@ class GenerationRunner:
         taboo_tags_by_agent: dict[str, list[str]] = {
             update["agent_id"]: update.get("taboo_tags", [])
             for update in previous_lineage_updates
+        }
+        prompt_variant_by_agent = {
+            update["agent_id"]: update.get("prompt_variant_id")
+            for update in previous_lineage_updates
+            if update.get("prompt_variant_id")
+        }
+        package_policy_by_agent = {
+            update["agent_id"]: update.get("package_policy_id")
+            for update in previous_lineage_updates
+            if update.get("package_policy_id")
         }
         for artifact in previous_artifacts:
             artifacts_by_agent[artifact.author_agent_id].append(artifact)
@@ -213,6 +234,8 @@ class GenerationRunner:
             "memorials_by_agent": dict(memorials_by_agent),
             "taboo_tags_by_agent": taboo_tags_by_agent,
             "registry_taboo_tags_by_role": registry_taboo_tags_by_role,
+            "prompt_variant_by_agent": prompt_variant_by_agent,
+            "package_policy_by_agent": package_policy_by_agent,
         }
 
     def run(self, *, generation_id: int | None = None, seed: int | None = None, dry_run: bool = False) -> dict[str, Any]:
@@ -237,7 +260,19 @@ class GenerationRunner:
         prompts = load_role_prompts(list(self.config.roles.distribution.keys()), roles_dir=self.roles_dir)
         agents, inheritance_packages, lineage_updates = self._spawn_population(generation_id, prompts)
         scratchpads = {
-            agent.agent_id: build_private_scratchpad(agent, inheritance_packages[agent.agent_id]) for agent in agents
+            agent.agent_id: build_private_scratchpad(
+                agent,
+                inheritance_packages[agent.agent_id],
+                variation={
+                    "prompt_variant_id": next(
+                        item["prompt_variant_id"] for item in lineage_updates if item["agent_id"] == agent.agent_id
+                    ),
+                    "package_policy_id": next(
+                        item["package_policy_id"] for item in lineage_updates if item["agent_id"] == agent.agent_id
+                    ),
+                },
+            )
+            for agent in agents
         }
 
         all_artifacts: list[ArtifactRecord] = []
@@ -289,13 +324,20 @@ class GenerationRunner:
                         generation_id=generation_id,
                         episode_index=episode_index,
                         agent=agent,
-                        prompt=prompts[agent.role],
+                        prompt=self.prompt_bundles_by_agent[agent.agent_id],
                         inherited=inherited,
                         scratchpad=scratchpads[agent.agent_id],
                         world=world,
                         step_index=step_index,
                         behavior=self.config.roles.behaviors.get(agent.role, "honest"),
                         available_citations=available_citations,
+                        prompt_variant_id=scratchpads[agent.agent_id].get("prompt_variant_id"),
+                        package_policy_id=scratchpads[agent.agent_id].get("package_policy_id"),
+                        prompt_variant_tags=next(
+                            item["prompt_variant_tags"]
+                            for item in lineage_updates
+                            if item["agent_id"] == agent.agent_id
+                        ),
                     )
                     for event in result.events:
                         self._store_event(event, all_events)
@@ -313,6 +355,8 @@ class GenerationRunner:
                             "repair_required": result.repair_required,
                             "governance_violations": result.events[0].event_payload["governance"]["violations"],
                             "scratchpad_size": len(scratchpads[agent.agent_id]["notes"]),
+                            "prompt_variant_id": scratchpads[agent.agent_id].get("prompt_variant_id"),
+                            "package_policy_id": scratchpads[agent.agent_id].get("package_policy_id"),
                         },
                     )
                     last_actor_id = agent.agent_id
@@ -478,14 +522,19 @@ class GenerationRunner:
         agents: list[AgentRecord] = []
         inheritance_packages: dict[str, InheritancePackage] = {}
         lineage_updates: list[dict[str, Any]] = []
+        prompt_bundles_by_agent: dict[str, RolePrompt] = {}
         roles: list[str] = []
         parent_context = self._parent_context(generation_id)
         parent_indexes: dict[str, int] = defaultdict(int)
+        role_ordinals: dict[str, int] = defaultdict(int)
+        parent_reuse_counts: dict[tuple[str, str], int] = defaultdict(int)
         for role, count in self.config.roles.distribution.items():
             roles.extend([role] * count)
         for index, role in enumerate(roles):
             lineage_id = f"lin-{generation_id:04d}-{index:03d}"
             agent_id = f"agent-{generation_id:04d}-{index:03d}"
+            role_ordinal = role_ordinals[role]
+            role_ordinals[role] += 1
             parent_candidates = parent_context["eligible_by_role"].get(role, [])
             parent_assignment = None
             if parent_candidates:
@@ -497,6 +546,27 @@ class GenerationRunner:
             parent_taboo_tags = [] if parent_agent is None else parent_context["taboo_tags_by_agent"].get(parent_agent.agent_id, [])
             registry_taboo_tags = parent_context["registry_taboo_tags_by_role"].get(role, [])
             inherited_taboo_tags = sorted({*registry_taboo_tags, *parent_taboo_tags})
+            parent_variant_id = None if parent_agent is None else parent_context["prompt_variant_by_agent"].get(parent_agent.agent_id)
+            parent_package_policy_id = None if parent_agent is None else parent_context["package_policy_by_agent"].get(parent_agent.agent_id)
+            if parent_agent is None:
+                variant = root_variant(role, role_ordinal)
+                package_policy_id = variant.default_package_policy
+                variant_origin = "seeded"
+            else:
+                reuse_key = (role, parent_agent.agent_id)
+                reuse_count = parent_reuse_counts[reuse_key]
+                parent_reuse_counts[reuse_key] += 1
+                if reuse_count > 0:
+                    variant = mutate_variant(role, parent_variant_id, steps=reuse_count)
+                    package_policy_id = mutate_package_policy(
+                        parent_package_policy_id or variant.default_package_policy,
+                        steps=reuse_count,
+                    )
+                    variant_origin = "mutated_on_parent_reuse"
+                else:
+                    variant = variant_by_id(role, parent_variant_id)
+                    package_policy_id = parent_package_policy_id or variant.default_package_policy
+                    variant_origin = "inherited"
             inherited = assemble_inheritance_package(
                 artifacts=[]
                 if parent_agent is None
@@ -506,7 +576,13 @@ class GenerationRunner:
                 else parent_context["memorials_by_agent"].get(parent_agent.agent_id, []),
                 artifact_limit=self.config.inheritance.artifact_summaries_per_agent,
                 memorial_limit=self.config.inheritance.memorials_per_agent,
+                policy_id=package_policy_id,
                 extra_taboo_tags=inherited_taboo_tags,
+            )
+            prompt_bundle = materialize_prompt_bundle(
+                base_prompt=prompts[role],
+                variant=variant,
+                package_policy_id=package_policy_id,
             )
             agent = AgentRecord(
                 agent_id=agent_id,
@@ -515,7 +591,7 @@ class GenerationRunner:
                 role=role,
                 model_name=self.config.provider.model,
                 provider_name=self.provider.name(),
-                prompt_bundle_version=prompts[role].sha256,
+                prompt_bundle_version=prompt_bundle.sha256,
                 constitution_version=CONSTITUTION_VERSION,
                 inherited_artifact_ids=inherited.artifact_ids,
                 inherited_memorial_ids=inherited.memorial_ids,
@@ -538,6 +614,7 @@ class GenerationRunner:
             self.storage.put_lineage(lineage)
             self.storage.put_agent(agent)
             agents.append(agent)
+            prompt_bundles_by_agent[agent_id] = prompt_bundle
             inheritance_packages[agent_id] = inherited
             lineage_updates.append(
                 {
@@ -552,8 +629,13 @@ class GenerationRunner:
                     "inherited_artifact_ids": inherited.artifact_ids,
                     "inherited_memorial_ids": inherited.memorial_ids,
                     "taboo_tags": inherited.taboo_tags,
+                    "prompt_variant_id": variant.variant_id,
+                    "prompt_variant_tags": list(variant.tags),
+                    "package_policy_id": package_policy_id,
+                    "variant_origin": variant_origin,
                 }
             )
+        self.prompt_bundles_by_agent = prompt_bundles_by_agent
         return agents, inheritance_packages, lineage_updates
 
     def _active_agents_for_episode(
@@ -654,6 +736,11 @@ class GenerationRunner:
         diversity_priority_lineages = [
             decision.lineage_id for decision in selection if decision.selection_bucket == "diversity_priority"
         ]
+        role_variant_count = {
+            role: len({item["prompt_variant_id"] for item in lineage_updates if item["role"] == role})
+            for role in sorted({item["role"] for item in lineage_updates})
+        }
+        variant_origin_counts = dict(Counter(item["variant_origin"] for item in lineage_updates))
         selection_summary = {
             "eligible": sum(decision.eligible for decision in selection),
             "propagation_blocked": sum(decision.propagation_blocked for decision in selection),
@@ -662,6 +749,8 @@ class GenerationRunner:
             "role_monoculture_index": role_monoculture_index,
             "diversity_priority_lineages": diversity_priority_lineages[:5],
             "diversity_priority_count": len(diversity_priority_lineages),
+            "role_variant_count": role_variant_count,
+            "variant_origin_counts": variant_origin_counts,
         }
         return {
             "generation_id": generation_id,
@@ -749,8 +838,14 @@ class GenerationRunner:
             lines.append(
                 f"- {update['lineage_id']} ({update['role']}): parents={', '.join(update['parent_lineage_ids']) or 'root'} "
                 f"inherited_artifacts={len(update['inherited_artifact_ids'])} "
-                f"inherited_memorials={len(update['inherited_memorial_ids'])}"
+                f"inherited_memorials={len(update['inherited_memorial_ids'])} "
+                f"variant={update['prompt_variant_id']} policy={update['package_policy_id']} origin={update['variant_origin']}"
             )
+        lines.extend(["", "## Prompt Variation", ""])
+        for role, count in summary["selection_summary"].get("role_variant_count", {}).items():
+            lines.append(f"- {role}: {count}")
+        for origin, count in summary["selection_summary"].get("variant_origin_counts", {}).items():
+            lines.append(f"- {origin}: {count}")
         lines.extend(["", "## Monoculture", ""])
         for role, value in summary["selection_summary"].get("role_monoculture_index", {}).items():
             lines.append(f"- {role}: {value}")

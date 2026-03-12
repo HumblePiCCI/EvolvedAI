@@ -102,6 +102,9 @@ class SharedNotebookV0(BaseWorld):
     def _open_items(self, collection: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [item for item in collection if item.get("status") == "open"]
 
+    def _step_count_for_agent(self, agent_id: str) -> int:
+        return sum(1 for step in self.step_history if step["agent_id"] == agent_id)
+
     def _preferred_action(self, agent: Any, step_index: int) -> str:
         if self._open_items_for_agent(self.correction_queue, agent.agent_id):
             return "respond_to_correction"
@@ -183,10 +186,40 @@ class SharedNotebookV0(BaseWorld):
                 return candidate
         return None
 
+    def _least_engaged_agent_for_role(
+        self,
+        role: str,
+        agents: list[Any],
+        *,
+        last_actor_id: str | None = None,
+    ) -> Any | None:
+        candidates = [agent for agent in agents if agent.role == role and agent.agent_id != last_actor_id]
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda agent: (
+                self._step_count_for_agent(agent.agent_id),
+                candidates.index(agent),
+            ),
+        )
+
     def select_next_agent(self, agents: list[Any], step_index: int, last_actor_id: str | None = None) -> Any | None:
         preferred_role = self.STEP_ROLE_SEQUENCE[step_index % len(self.STEP_ROLE_SEQUENCE)]
         if preferred_role == "citizen":
+            under_engaged_citizen = self._least_engaged_agent_for_role(
+                "citizen",
+                agents,
+                last_actor_id=last_actor_id,
+            )
             clarification_candidate = self._oldest_open_clarification_candidate(last_actor_id=last_actor_id)
+            if (
+                clarification_candidate is not None
+                and under_engaged_citizen is not None
+                and self._step_count_for_agent(clarification_candidate.agent_id)
+                > self._step_count_for_agent(under_engaged_citizen.agent_id)
+            ):
+                return under_engaged_citizen
             if clarification_candidate is not None:
                 return clarification_candidate
         else:

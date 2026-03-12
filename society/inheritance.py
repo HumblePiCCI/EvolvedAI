@@ -50,12 +50,56 @@ def assemble_inheritance_package(
     memorials: list[MemorialRecord],
     artifact_limit: int,
     memorial_limit: int,
+    policy_id: str = "balanced",
     extra_taboo_tags: list[str] | None = None,
 ) -> InheritancePackage:
-    chosen_artifacts = [artifact for artifact in artifacts if artifact.quarantine_status == QUARANTINE_CLEAN][
-        :artifact_limit
-    ]
-    chosen_memorials = [memorial for memorial in memorials if memorial.classification != "quarantined"][:memorial_limit]
+    clean_artifacts = [artifact for artifact in artifacts if artifact.quarantine_status == QUARANTINE_CLEAN]
+    clean_memorials = [memorial for memorial in memorials if memorial.classification != "quarantined"]
+    if policy_id == "artifact_first":
+        clean_artifacts.sort(
+            key=lambda artifact: (len(artifact.citations), artifact.created_at, artifact.artifact_id),
+            reverse=True,
+        )
+        clean_memorials.sort(
+            key=lambda memorial: (memorial.classification == "honored", len(memorial.taboo_tags), memorial.created_at),
+            reverse=True,
+        )
+    elif policy_id == "memorial_first":
+        clean_artifacts.sort(
+            key=lambda artifact: (
+                "uncertainty" in artifact.summary.lower() or "risk" in artifact.summary.lower(),
+                artifact.created_at,
+            ),
+            reverse=True,
+        )
+        clean_memorials.sort(
+            key=lambda memorial: (
+                memorial.failure_mode is not None,
+                memorial.classification == "cautionary",
+                len(memorial.taboo_tags),
+                memorial.created_at,
+            ),
+            reverse=True,
+        )
+    elif policy_id == "taboo_first":
+        clean_artifacts.sort(
+            key=lambda artifact: (
+                len(artifact.citations),
+                "correction" in artifact.summary.lower() or "risk" in artifact.summary.lower(),
+                artifact.created_at,
+            ),
+            reverse=True,
+        )
+        clean_memorials.sort(
+            key=lambda memorial: (len(memorial.taboo_tags), memorial.failure_mode is not None, memorial.created_at),
+            reverse=True,
+        )
+    else:
+        clean_artifacts.sort(key=lambda artifact: (artifact.created_at, artifact.artifact_id), reverse=True)
+        clean_memorials.sort(key=lambda memorial: (memorial.created_at, memorial.memorial_id), reverse=True)
+
+    chosen_artifacts = clean_artifacts[:artifact_limit]
+    chosen_memorials = clean_memorials[:memorial_limit]
     taboo_tags = sorted({*collect_taboo_tags(chosen_memorials), *(extra_taboo_tags or [])})
     return InheritancePackage(
         artifact_ids=[artifact.artifact_id for artifact in chosen_artifacts],

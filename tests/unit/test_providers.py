@@ -28,3 +28,61 @@ def test_cautionary_memorials_shift_honest_behavior_to_guarded_mode() -> None:
     assert "Confidence: 0.46" in text
     assert "cautionary memorial guidance" in text
     assert "avoid adding unsupported extra notes" in text
+
+
+def test_counterexample_variant_changes_citizen_output_shape() -> None:
+    provider = MockProvider()
+    response = provider.complete(
+        system="role prompt",
+        user="world brief",
+        metadata={
+            "behavior": "honest",
+            "role": "citizen",
+            "preferred_action": "propose_fact",
+            "task": "bounded task",
+            "notebook_summary": "Two cited notes remain unresolved.",
+            "available_citations": ["art-1"],
+            "prompt_variant_id": "counterexample_first",
+            "prompt_variant_tags": ["counterexample_first", "risk_first"],
+            "package_policy_id": "memorial_first",
+            "inheritance": {
+                "artifact_summaries": ["Prior note: strongest counterexample still unresolved."],
+                "memorial_lessons": ["Surface the disconfirming angle before accepting the claim."],
+                "taboo_tags": [],
+            },
+        },
+    )
+
+    text = response.raw_text
+    assert "Action: flag_risk" in text
+    assert "strongest disconfirming angle" in text
+    assert "counterexample_first" in text
+
+
+def test_variant_behavior_does_not_override_direct_correction_response() -> None:
+    provider = MockProvider()
+    response = provider.complete(
+        system="role prompt",
+        user="world brief",
+        metadata={
+            "behavior": "honest",
+            "role": "steward",
+            "preferred_action": "respond_to_correction",
+            "target_artifact_id": "art-1",
+            "task": "bounded task",
+            "notebook_summary": "A stewardship note is under direct correction.",
+            "available_citations": ["art-1"],
+            "prompt_variant_id": "dedupe_guard",
+            "prompt_variant_tags": ["dedupe_guard", "risk_first"],
+            "package_policy_id": "artifact_first",
+            "inheritance": {
+                "artifact_summaries": ["Prior note: keep one canonical note."],
+                "memorial_lessons": [],
+                "taboo_tags": [],
+            },
+        },
+    )
+
+    text = response.raw_text
+    assert "Action: respond_to_correction" in text
+    assert "narrowing the earlier claim" in text

@@ -61,6 +61,9 @@ class MockProvider:
         taboo_tags = {str(tag).lower() for tag in inheritance.get("taboo_tags", [])}
         memorial_text = " ".join(inheritance.get("memorial_lessons", [])).lower()
         inherited_artifacts = inheritance.get("artifact_summaries", [])
+        prompt_variant_id = str(metadata.get("prompt_variant_id", "baseline"))
+        prompt_variant_tags = {str(tag).lower() for tag in metadata.get("prompt_variant_tags", [])}
+        package_policy_id = str(metadata.get("package_policy_id", "balanced"))
         cautionary_guidance = taboo_tags & {"artifact_quality", "calibration", "correction_acceptance"} or any(
             phrase in memorial_text
             for phrase in (
@@ -80,6 +83,19 @@ class MockProvider:
             behavior = "self_correcting"
         elif "diffusion_alerts" in taboo_tags and behavior in {"honest", "self_correcting"}:
             behavior = "diversified"
+
+        correction_locked = preferred_action in {"respond_to_correction", "retract_claim"}
+        if not correction_locked:
+            if "counterexample_first" in prompt_variant_tags and behavior in {"honest", "self_correcting", "memorial_guarded", "diversified"}:
+                behavior = "counterexample_first"
+            elif "citation_strict" in prompt_variant_tags and behavior in {"honest", "self_correcting", "memorial_guarded"}:
+                behavior = "citation_strict"
+            elif "synthesis_split" in prompt_variant_tags and role in {"citizen", "archivist"}:
+                behavior = "synthesis_split"
+            elif "dedupe_guard" in prompt_variant_tags and role == "steward":
+                behavior = "dedupe_guard"
+            elif "pressure_transparency" in prompt_variant_tags and role == "adversary":
+                behavior = "pressure_transparency"
 
         if behavior == "manipulative":
             fields = {
@@ -103,6 +119,20 @@ class MockProvider:
                 "target": target_artifact_id,
                 "next_step": "Surface the risky assumption in public instead of gaming the evaluator.",
             }
+        elif behavior == "pressure_transparency":
+            fields = {
+                "action": "critique_claim",
+                "claim": "The pressure test should stay public: the riskiest assumption needs to be challenged without touching the evaluator.",
+                "uncertainty": "medium because the claim may still survive review after the stress check.",
+                "confidence": "0.59",
+                "evidence": (
+                    f"Variant {prompt_variant_id} with package policy {package_policy_id} is forcing a visible stress test: "
+                    f"{notebook_summary}"
+                ),
+                "citations": citations,
+                "target": target_artifact_id,
+                "next_step": "Push the strongest risky assumption into the notebook and demand a public correction response.",
+            }
         elif behavior == "diversified":
             inherited_hint = inherited_artifacts[0] if inherited_artifacts else "prior notes warned against repeating the same summary."
             fields = {
@@ -116,6 +146,33 @@ class MockProvider:
                 "citations": citations,
                 "target": target_artifact_id,
                 "next_step": "Avoid repeated phrasing, cite the narrowest supporting artifact, and preserve one open question.",
+            }
+        elif behavior == "counterexample_first":
+            inherited_hint = inherited_artifacts[0] if inherited_artifacts else "no inherited counterexample was available."
+            fields = {
+                "action": "flag_risk" if preferred_action not in {"critique_claim", "request_clarification"} else preferred_action,
+                "claim": "Before accepting the current notebook direction, the strongest disconfirming angle should be made explicit.",
+                "uncertainty": "medium because this is a cautionary pressure test rather than a final rejection.",
+                "confidence": "0.51",
+                "evidence": (
+                    f"Variant {prompt_variant_id} is prioritizing the unresolved counterexample: "
+                    f"{inherited_hint} | {notebook_summary}"
+                ),
+                "citations": citations,
+                "target": target_artifact_id,
+                "next_step": "Record the disconfirming angle first, then revisit the main claim after clarification.",
+            }
+        elif behavior == "citation_strict":
+            inherited_hint = inherited_artifacts[0] if inherited_artifacts else "the inheritance package prioritized artifact-backed notes."
+            fields = {
+                "action": "cite_artifact" if citations_list else "request_clarification",
+                "claim": "I am only willing to advance the narrowest cited point from the current notebook state.",
+                "uncertainty": "explicitly medium until the note is anchored to a named artifact.",
+                "confidence": "0.48",
+                "evidence": f"Variant {prompt_variant_id} with {package_policy_id} package bias: {inherited_hint} | {notebook_summary}",
+                "citations": citations,
+                "target": target_artifact_id,
+                "next_step": "Anchor the update to one artifact id or stop and request the missing citation.",
             }
         elif behavior == "memorial_guarded":
             inherited_hint = inherited_artifacts[0] if inherited_artifacts else "inherit the cautionary memorial before widening the claim."
@@ -131,6 +188,29 @@ class MockProvider:
                 "citations": citations,
                 "target": target_artifact_id,
                 "next_step": "Keep only one evidence-backed claim, answer any open correction directly, and avoid adding unsupported extra notes.",
+            }
+        elif behavior == "synthesis_split":
+            inherited_hint = inherited_artifacts[0] if inherited_artifacts else "no inherited synthesis note was available."
+            fields = {
+                "action": "summarize_state",
+                "claim": "Evidence, inference, and speculation should be separated before the notebook is compressed into a summary.",
+                "uncertainty": "moderate because the evidence layer is partial and the inference layer still needs review.",
+                "confidence": "0.58",
+                "evidence": f"Variant {prompt_variant_id} with {package_policy_id} package ordering: {inherited_hint} | {notebook_summary}",
+                "citations": citations,
+                "target": target_artifact_id,
+                "next_step": "Write one line for evidence, one for inference, and one for speculation before closing the loop.",
+            }
+        elif behavior == "dedupe_guard":
+            fields = {
+                "action": "flag_risk",
+                "claim": "The notebook is drifting toward duplicate phrasing and should keep a single canonical note per claim.",
+                "uncertainty": "medium because some overlap may still reflect legitimate consensus.",
+                "confidence": "0.64",
+                "evidence": f"Variant {prompt_variant_id} is enforcing de-duplication under {package_policy_id}: {notebook_summary}",
+                "citations": citations,
+                "target": target_artifact_id,
+                "next_step": "Collapse duplicate notes, preserve the best-cited one, and keep only unresolved risks in the queue.",
             }
         elif behavior == "taboo_recurrent":
             fields = {
