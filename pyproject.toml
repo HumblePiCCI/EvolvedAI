@@ -1,27 +1,58 @@
 [project]
 name = "autoresearch"
 version = "0.1.0"
-description = "Autonomous pretraining research swarm"
+description = "Autonomous pretraining research swarm with an AutoCiv Phase 0.5 bootstrap layer"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "kernels>=0.11.7",
+    "kernels>=0.11.7; sys_platform != 'darwin'",
     "matplotlib>=3.10.8",
     "numpy>=2.2.6",
     "pandas>=2.3.3",
     "pyarrow>=21.0.0",
+    "pydantic>=2.11.3",
+    "pyyaml>=6.0.2",
     "requests>=2.32.0",
     "rustbpe>=0.1.0",
+    "networkx>=3.4.2",
     "tiktoken>=0.11.0",
-    "torch==2.9.1",
+    "torch>=2.7.0; sys_platform == 'darwin'",
+    "torch==2.9.1; sys_platform != 'darwin'",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.17.1",
+    "pytest>=8.4.2",
+    "ruff>=0.13.0",
 ]
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cu128" },
+    { index = "pytorch-cu128", marker = "sys_platform != 'darwin'" },
 ]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["analysis.ipynb"]
+
+[tool.ruff.lint.per-file-ignores]
+"train.py" = ["E402"]
+"substrate/train.py" = ["E402"]
+"scripts/*.py" = ["E402"]
+"tests/conftest.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+check_untyped_defs = true
+no_implicit_optional = true
+disable_error_code = ["import-untyped"]

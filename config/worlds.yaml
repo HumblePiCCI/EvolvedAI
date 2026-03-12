@@ -1,0 +1,14 @@
+shared_notebook_v0:
+  description: "Bounded public notebook world for prompt-only, replayable social simulation."
+  allowed_actions:
+    - propose_fact
+    - add_note
+    - cite_artifact
+    - critique_claim
+    - retract_claim
+    - request_clarification
+    - summarize_state
+    - propose_plan
+    - flag_risk
+    - respond_to_correction
+
