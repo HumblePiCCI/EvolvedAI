@@ -9,6 +9,9 @@ from evals import run_eval_suite
 from society.config import AutoCivConfig, dump_config_snapshot
 from society.constants import (
     ACTIVE_STATUS,
+    BUNDLE_ARCHIVE_EXPLORATION_SLOTS,
+    BUNDLE_ARCHIVE_MIN_ROLE_SIZE,
+    BUNDLE_ARCHIVE_MONOCULTURE_THRESHOLD,
     COMPLETED_STATUS,
     CONSTITUTION_VERSION,
     DRIFT_PRESSURE_EXPLORATION_SLOTS,
@@ -206,6 +209,14 @@ class GenerationRunner:
             for update in previous_lineage_updates
             if update.get("package_policy_id")
         }
+        bundle_signatures_by_role = {
+            role: {
+                update.get("bundle_signature")
+                for update in previous_lineage_updates
+                if update.get("role") == role and update.get("bundle_signature")
+            }
+            for role in sorted({update.get("role") for update in previous_lineage_updates if update.get("role")})
+        }
         previous_selection = select_candidates(
             previous_agents,
             previous_evals,
@@ -220,7 +231,11 @@ class GenerationRunner:
         for memorial in previous_memorials:
             memorials_by_agent[memorial.source_agent_id].append(memorial)
 
-        parent_pool_summary = self._parent_pool_summary(previous_agents, previous_selection)
+        parent_pool_summary = self._parent_pool_summary(
+            previous_agents,
+            previous_selection,
+            role_monoculture_index=prior_role_monoculture,
+        )
         eligible_by_role = parent_pool_summary["pools_by_role"]
 
         current_registry_by_role = build_role_scoped_taboo_registry(
@@ -241,7 +256,9 @@ class GenerationRunner:
             "registry_taboo_tags_by_role": registry_taboo_tags_by_role,
             "prompt_variant_by_agent": prompt_variant_by_agent,
             "package_policy_by_agent": package_policy_by_agent,
+            "bundle_signatures_by_role": bundle_signatures_by_role,
             "prior_role_monoculture": prior_role_monoculture,
+            "bundle_archive_roles": parent_pool_summary["bundle_archive_roles"],
         }
 
     def _variation_by_agent(self, lineage_updates: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -257,12 +274,31 @@ class GenerationRunner:
         self,
         agents: list[AgentRecord],
         selection: list[Any],
+        *,
+        role_monoculture_index: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         agent_by_id = {agent.agent_id: agent for agent in agents}
         pools_by_role: dict[str, list[dict[str, Any]]] = {}
         role_parent_bundle_concentration_index: dict[str, float] = {}
         preserved_bundles: list[dict[str, Any]] = []
         preserved_signatures: set[str] = set()
+        role_counts = Counter(agent.role for agent in agents)
+        if role_monoculture_index is None:
+            role_monoculture_index = {
+                role: round(
+                    statistics.fmean([decision.cohort_similarity for decision in selection if decision.role == role]),
+                    4,
+                )
+                if any(decision.role == role for decision in selection)
+                else 0.0
+                for role in sorted({decision.role for decision in selection})
+            }
+        bundle_archive_roles = {
+            role
+            for role, score in role_monoculture_index.items()
+            if score >= BUNDLE_ARCHIVE_MONOCULTURE_THRESHOLD
+            and role_counts.get(role, 0) >= BUNDLE_ARCHIVE_MIN_ROLE_SIZE
+        }
 
         for role in sorted({agent.role for agent in agents}):
             candidates = [
@@ -275,6 +311,7 @@ class GenerationRunner:
             pool = build_parent_candidate_pool(
                 candidates,
                 slot_count=self.config.roles.distribution.get(role, len(candidates)),
+                exploration_slots=BUNDLE_ARCHIVE_EXPLORATION_SLOTS if role in bundle_archive_roles else 0,
             )
             pools_by_role[role] = pool
             bundle_counts = Counter(
@@ -307,6 +344,7 @@ class GenerationRunner:
             "pools_by_role": pools_by_role,
             "role_parent_bundle_concentration_index": role_parent_bundle_concentration_index,
             "preserved_bundles": preserved_bundles,
+            "bundle_archive_roles": sorted(bundle_archive_roles),
         }
 
     def _drift_pressure_roles(self, parent_context: dict[str, Any]) -> set[str]:
@@ -328,9 +366,14 @@ class GenerationRunner:
         parent_package_policy_id: str | None,
         base_steps: int,
         used_bundle_signatures: set[str],
+        forbidden_bundle_signatures: set[str] | None = None,
     ) -> tuple[Any, str]:
+        forbidden_bundle_signatures = forbidden_bundle_signatures or set()
         signature = f"{role}:{variant.variant_id}:{package_policy_id}"
-        if signature not in used_bundle_signatures or parent_variant_id is None:
+        if (
+            signature not in used_bundle_signatures
+            and signature not in forbidden_bundle_signatures
+        ) or parent_variant_id is None:
             return variant, package_policy_id
 
         max_attempts = len(variants_for_role(role)) * len(PACKAGE_POLICIES)
@@ -339,7 +382,10 @@ class GenerationRunner:
             candidate_variant = mutate_variant(role, parent_variant_id, steps=base_steps + extra_steps)
             candidate_policy = mutate_package_policy(policy_seed, steps=base_steps + extra_steps)
             candidate_signature = f"{role}:{candidate_variant.variant_id}:{candidate_policy}"
-            if candidate_signature not in used_bundle_signatures:
+            if (
+                candidate_signature not in used_bundle_signatures
+                and candidate_signature not in forbidden_bundle_signatures
+            ):
                 return candidate_variant, candidate_policy
         return variant, package_policy_id
 
@@ -670,12 +716,24 @@ class GenerationRunner:
                 reuse_key = (role, parent_agent.agent_id)
                 reuse_count = parent_reuse_counts[reuse_key]
                 parent_reuse_counts[reuse_key] += 1
+                archive_exploration_active = parent_assignment is not None and parent_assignment.get("selection_source") == "bundle_exploration"
                 drift_pressure_active = (
                     reuse_count == 0
+                    and not archive_exploration_active
                     and role in drift_pressure_roles
                     and drift_pressure_used[role] < DRIFT_PRESSURE_EXPLORATION_SLOTS
                 )
-                if reuse_count > 0:
+                if archive_exploration_active:
+                    base_variant = variant_by_id(role, parent_variant_id)
+                    exploration_steps = max(1, reuse_count + 1)
+                    variant = mutate_variant(role, base_variant.variant_id, steps=exploration_steps)
+                    package_policy_id = mutate_package_policy(
+                        parent_package_policy_id or base_variant.default_package_policy,
+                        steps=exploration_steps + 1,
+                    )
+                    variant_origin = "bundle_archive_exploration"
+                    base_steps = exploration_steps
+                elif reuse_count > 0:
                     variant = mutate_variant(role, parent_variant_id, steps=reuse_count)
                     package_policy_id = mutate_package_policy(
                         parent_package_policy_id or variant.default_package_policy,
@@ -706,6 +764,11 @@ class GenerationRunner:
                     parent_package_policy_id=parent_package_policy_id,
                     base_steps=base_steps,
                     used_bundle_signatures=used_bundle_signatures_by_role[role],
+                    forbidden_bundle_signatures=(
+                        parent_context["bundle_signatures_by_role"].get(role, set())
+                        if archive_exploration_active
+                        else set()
+                    ),
                 )
             current_bundle_signature = f"{role}:{variant.variant_id}:{package_policy_id}"
             used_bundle_signatures_by_role[role].add(current_bundle_signature)
@@ -769,6 +832,7 @@ class GenerationRunner:
                     "inheritance_source_bundle_signature": None if parent_assignment is None else parent_assignment.get("bundle_signature"),
                     "inheritance_source_bundle_preserved": False if parent_assignment is None else parent_assignment.get("bundle_preserved", False),
                     "inheritance_source_bundle_reason": None if parent_assignment is None else parent_assignment.get("bundle_preservation_reason"),
+                    "inheritance_source_selection_source": None if parent_assignment is None else parent_assignment.get("selection_source"),
                     "lineage_taboo_tags": parent_taboo_tags,
                     "registry_taboo_tags": registry_taboo_tags,
                     "inherited_artifact_ids": inherited.artifact_ids,
@@ -927,6 +991,11 @@ class GenerationRunner:
             for role in sorted({item["role"] for item in lineage_updates})
         }
         variant_origin_counts = dict(Counter(item["variant_origin"] for item in lineage_updates))
+        bundle_archive_lineages = [
+            item["lineage_id"]
+            for item in lineage_updates
+            if item["variant_origin"] == "bundle_archive_exploration"
+        ]
         selection_summary = {
             "eligible": sum(decision.eligible for decision in augmented_selection),
             "propagation_blocked": sum(decision.propagation_blocked for decision in augmented_selection),
@@ -942,6 +1011,9 @@ class GenerationRunner:
             "preserved_bundle_lineages": [item["lineage_id"] for item in parent_pool_summary["preserved_bundles"]],
             "preserved_bundle_count": len(parent_pool_summary["preserved_bundles"]),
             "preserved_bundles": parent_pool_summary["preserved_bundles"],
+            "bundle_archive_roles": parent_pool_summary["bundle_archive_roles"],
+            "bundle_archive_lineages": bundle_archive_lineages,
+            "bundle_archive_count": len(bundle_archive_lineages),
             "preserved_bundles_by_role": {
                 role: [item["bundle_signature"] for item in parent_pool_summary["preserved_bundles"] if item["role"] == role]
                 for role in sorted({item["role"] for item in parent_pool_summary["preserved_bundles"]})
@@ -1018,6 +1090,7 @@ class GenerationRunner:
                 f"- survivor_lineages: {', '.join(summary['selection_summary']['survivor_lineages']) or 'none'}",
                 f"- diversity_priority_lineages: {', '.join(summary['selection_summary']['diversity_priority_lineages']) or 'none'}",
                 f"- preserved_bundle_lineages: {', '.join(summary['selection_summary'].get('preserved_bundle_lineages', [])) or 'none'}",
+                f"- bundle_archive_lineages: {', '.join(summary['selection_summary'].get('bundle_archive_lineages', [])) or 'none'}",
                 "",
                 "## Quarantine",
                 "",
@@ -1054,6 +1127,8 @@ class GenerationRunner:
             lines.append(
                 f"- preserved:{item['role']}:{item['prompt_variant_id']}:{item['package_policy_id']}"
             )
+        for role in summary["selection_summary"].get("bundle_archive_roles", []):
+            lines.append(f"- archive_role:{role}")
         lines.extend(["", "## Monoculture", ""])
         for role, value in summary["selection_summary"].get("role_monoculture_index", {}).items():
             lines.append(f"- {role}: {value}")

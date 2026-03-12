@@ -86,6 +86,7 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f"cohort_similarity={item.get('cohort_similarity', 0.0)} "
                 f"bundle={item.get('bundle_signature', 'none')} "
                 f"bundle_preserved={item.get('bundle_preserved', False)} "
+                f"bundle_reason={item.get('bundle_preservation_reason') or 'none'} "
                 f"bucket={item.get('selection_bucket', 'standard')} "
                 f"reasons={','.join(item['reasons']) or 'none'}"
             )
@@ -115,6 +116,7 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             lines.append(
                 f"  {item['lineage_id']} role={item['role']} parents={','.join(item['parent_lineage_ids']) or 'root'} "
                 f"source_agent={item['inheritance_source_agent_id'] or 'none'} "
+                f"source_selection={item.get('inheritance_source_selection_source') or 'none'} "
                 f"inherited_artifacts={len(item['inherited_artifact_ids'])} "
                 f"inherited_memorials={len(item['inherited_memorial_ids'])} "
                 f"taboo_tags={','.join(item['taboo_tags']) or 'none'} "
@@ -143,6 +145,10 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f"{item['role']}:{item['prompt_variant_id']}:{item['package_policy_id']}"
                 f" via={item['lineage_id']}"
             )
+        for role in summary.get("selection_summary", {}).get("bundle_archive_roles", []):
+            lines.append(f"  archive_role:{role}")
+        for lineage_id in summary.get("selection_summary", {}).get("bundle_archive_lineages", []):
+            lines.append(f"  archive_lineage:{lineage_id}")
         lines.append("")
 
     inheritance_effect = summary.get("inheritance_effect", {})

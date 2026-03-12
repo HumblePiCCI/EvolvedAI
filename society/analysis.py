@@ -166,6 +166,7 @@ def lineage_entries(
             "inheritance_source_bundle_signature": lineage_update.get("inheritance_source_bundle_signature"),
             "inheritance_source_bundle_preserved": lineage_update.get("inheritance_source_bundle_preserved", False),
             "inheritance_source_bundle_reason": lineage_update.get("inheritance_source_bundle_reason"),
+            "inheritance_source_selection_source": lineage_update.get("inheritance_source_selection_source"),
             "inherited_artifact_ids": inherited_artifact_ids,
             "inherited_memorial_ids": inherited_memorial_ids,
             "inherited_artifacts": inherited_artifacts,
@@ -268,7 +269,8 @@ def render_lineage_report(report: dict[str, Any]) -> str:
             f"warning_labels={','.join(entry['warning_labels']) or 'none'} "
             f"package_policy={entry['package_policy_id'] or 'none'} origin={entry['variant_origin'] or 'none'} "
             f"bundle={entry['bundle_signature'] or 'none'} parent_bundle={entry['inheritance_source_bundle_signature'] or 'none'} "
-            f"parent_preserved={entry['inheritance_source_bundle_preserved']}"
+            f"parent_preserved={entry['inheritance_source_bundle_preserved']} "
+            f"parent_source={entry['inheritance_source_selection_source'] or 'none'}"
         )
         lines.append(
             f"  base_score={entry['base_score']} diversity_bonus={entry['diversity_bonus']} "
@@ -303,6 +305,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
 
     generation_metrics = []
     previous_bundles: set[tuple[str, str, str]] | None = None
+    previous_exploratory_bundles: set[tuple[str, str, str]] = set()
     for generation in generations:
         summary = generation.summary_json
         hidden_counts = summary.get("hidden_eval_failure_counts", {})
@@ -310,6 +313,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         role_monoculture = selection_summary.get("role_monoculture_index", {})
         role_counts = Counter(item.get("role") for item in summary.get("selection_outcome", []))
         major_roles = [role for role, count in role_counts.items() if count >= 3 and role in role_monoculture]
+        major_role_set = set(major_roles)
         scoped_monoculture = {role: role_monoculture[role] for role in major_roles}
         role_variant_count = selection_summary.get("role_variant_count", {})
         role_bundle_count = selection_summary.get("role_bundle_count", {})
@@ -364,8 +368,35 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 if bundle_share > largest_bundle_share:
                     largest_bundle_share = bundle_share
                     most_common_bundle_role = role
-        current_bundles = _bundle_set(summary.get("lineage_updates", []))
+        current_bundles = {
+            bundle
+            for bundle in _bundle_set(summary.get("lineage_updates", []))
+            if bundle[0] in major_role_set
+        }
         bundle_survival = set() if previous_bundles is None else current_bundles & previous_bundles
+        new_bundles = current_bundles if previous_bundles is None else current_bundles - previous_bundles
+        new_bundle_signatures = {
+            f"{role}:{variant}:{policy}" for role, variant, policy in new_bundles
+        }
+        new_bundle_lineages = [
+            item
+            for item in summary.get("selection_outcome", [])
+            if item.get("role") in major_role_set and item.get("bundle_signature") in new_bundle_signatures
+        ]
+        exploratory_bundles = {
+            (
+                item.get("role"),
+                item.get("prompt_variant_id"),
+                item.get("package_policy_id"),
+            )
+            for item in summary.get("lineage_updates", [])
+            if item.get("variant_origin") == "bundle_archive_exploration"
+            and item.get("role") in major_role_set
+            and item.get("role")
+            and item.get("prompt_variant_id")
+            and item.get("package_policy_id")
+        }
+        exploration_bundle_survival = current_bundles & previous_exploratory_bundles
         bundle_concentration_index = max(scoped_bundle_concentration.values(), default=0.0)
         most_bundle_concentrated_role = (
             max(scoped_bundle_concentration, key=lambda role: scoped_bundle_concentration[role])
@@ -417,10 +448,32 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     for item in preserved_bundles
                     if item.get("bundle_signature")
                 ],
+                "bundle_archive_count": selection_summary.get("bundle_archive_count", 0),
+                "bundle_archive_roles": selection_summary.get("bundle_archive_roles", []),
                 "bundle_survival_count": len(bundle_survival),
                 "bundle_survival_rate": (
                     round(len(bundle_survival) / len(previous_bundles), 4)
                     if previous_bundles
+                    else 0.0
+                ),
+                "bundle_turnover_count": len(new_bundles),
+                "bundle_turnover_rate": round(len(new_bundles) / len(current_bundles), 4) if current_bundles else 0.0,
+                "new_bundle_win_rate": (
+                    round(
+                        sum(
+                            int(item.get("eligible") and item.get("quarantine_status") == "clean")
+                            for item in new_bundle_lineages
+                        )
+                        / len(new_bundle_lineages),
+                        4,
+                    )
+                    if new_bundle_lineages
+                    else 0.0
+                ),
+                "exploration_bundle_survival_count": len(exploration_bundle_survival),
+                "exploration_bundle_survival_rate": (
+                    round(len(exploration_bundle_survival) / len(previous_exploratory_bundles), 4)
+                    if previous_exploratory_bundles
                     else 0.0
                 ),
                 "parent_concentration_index": parent_concentration,
@@ -430,6 +483,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             }
         )
         previous_bundles = current_bundles
+        previous_exploratory_bundles = exploratory_bundles
 
     lineages = lineage_entries(storage, generation_ids=generation_ids)
     outcome_counts = Counter(entry["outcome"] for entry in lineages)
@@ -459,6 +513,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         variant_delta = last["prompt_variant_count"] - first["prompt_variant_count"]
         bundle_delta = last["prompt_bundle_count"] - first["prompt_bundle_count"]
         bundle_survival_delta = round(last["bundle_survival_rate"] - first["bundle_survival_rate"], 4)
+        bundle_turnover_delta = round(last["bundle_turnover_rate"] - first["bundle_turnover_rate"], 4)
         if diffusion_delta < 0:
             notes.append(f"Diffusion alerts fell by {-diffusion_delta} between the first and last generation.")
         elif diffusion_delta > 0:
@@ -502,6 +557,12 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             notes.append(f"Bundle survival rate fell by {-bundle_survival_delta} across the batch.")
         else:
             notes.append("Bundle survival rate stayed flat across the batch.")
+        if bundle_turnover_delta > 0:
+            notes.append(f"Bundle turnover rate increased by {bundle_turnover_delta} across the batch.")
+        elif bundle_turnover_delta < 0:
+            notes.append(f"Bundle turnover rate fell by {-bundle_turnover_delta} across the batch.")
+        else:
+            notes.append("Bundle turnover rate stayed flat across the batch.")
     if warned_lineages:
         notes.append(
             "Inheritance warning effect: "
@@ -551,7 +612,11 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"bundle_concentration_index={metric['bundle_concentration_index']} "
             f"parent_bundle_concentration_index={metric['parent_bundle_concentration_index']} "
             f"bundle_survival_rate={metric['bundle_survival_rate']} "
+            f"bundle_turnover_rate={metric['bundle_turnover_rate']} "
+            f"new_bundle_win_rate={metric['new_bundle_win_rate']} "
+            f"exploration_bundle_survival_rate={metric['exploration_bundle_survival_rate']} "
             f"preserved_bundle_count={metric['preserved_bundle_count']} "
+            f"bundle_archive_count={metric['bundle_archive_count']} "
             f"parent_concentration_index={metric['parent_concentration_index']} "
             f"drift_pressure_lineages={metric['drift_pressure_lineages']} "
             f"diversity_priority_count={metric['diversity_priority_count']} "
@@ -564,6 +629,8 @@ def render_experiment_report(report: dict[str, Any]) -> str:
         )
         if metric["preserved_bundles"]:
             lines.append(f"  preserved_bundles={','.join(metric['preserved_bundles'])}")
+        if metric["bundle_archive_roles"]:
+            lines.append(f"  bundle_archive_roles={','.join(metric['bundle_archive_roles'])}")
     lines.extend(["", "## Lineage outcomes", ""])
     for outcome, count in sorted(report["lineage_outcomes"].items()):
         lines.append(f"- {outcome}: {count}")

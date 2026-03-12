@@ -233,6 +233,7 @@ def _bundle_balanced_selection(
     ordered: list[dict[str, Any]],
     *,
     slot_count: int,
+    exploration_slots: int = 0,
 ) -> list[dict[str, Any]]:
     by_bundle: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in ordered:
@@ -265,6 +266,32 @@ def _bundle_balanced_selection(
             )
         )
         bundle_slots[bundle_id] += 1
+
+    remaining_exploration_slots = min(exploration_slots, max(0, slot_count - len(selected)))
+    if remaining_exploration_slots > 0:
+        exploration_candidates = sorted(
+            (
+                (bundle_id, items[0])
+                for bundle_id, items in by_bundle.items()
+                if bundle_slots[bundle_id] > 0
+            ),
+            key=lambda candidate: (
+                len(by_bundle[candidate[0]]),
+                -candidate[1]["decision"].diversity_bonus,
+                -candidate[1]["decision"].score,
+                len(candidate[1]["decision"].reasons),
+            ),
+        )
+        for bundle_id, item in exploration_candidates[:remaining_exploration_slots]:
+            selected.append(
+                _with_pool_metadata(
+                    item,
+                    preserved=False,
+                    preservation_reason="bundle_archive_exploration",
+                    selection_source="bundle_exploration",
+                )
+            )
+            bundle_slots[bundle_id] += 1
 
     while len(selected) < slot_count:
         candidate_options: list[tuple[tuple[int, bool, float, float, int], str, dict[str, Any]]] = []
@@ -302,6 +329,7 @@ def build_parent_candidate_pool(
     candidates: Sequence[Mapping[str, Any]],
     *,
     slot_count: int,
+    exploration_slots: int = 0,
 ) -> list[dict[str, Any]]:
     if slot_count <= 0 or not candidates:
         return []
@@ -314,7 +342,11 @@ def build_parent_candidate_pool(
             reverse=True,
         )
     ]
-    selected = _bundle_balanced_selection(ordered, slot_count=slot_count)
+    selected = _bundle_balanced_selection(
+        ordered,
+        slot_count=slot_count,
+        exploration_slots=exploration_slots,
+    )
     if not selected:
         return []
 
