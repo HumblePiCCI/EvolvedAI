@@ -28,6 +28,11 @@ def test_replay_renders_timeline(minimal_config) -> None:
         assert "archive_escalated_backoff_count:" in generation_timeline
         assert "archive_reentry_attempt_count:" in generation_timeline
         assert "archive_underperform_count:" in generation_timeline
+        assert "archive_positive_lift_count:" in generation_timeline
+        assert "archive_value_deficit_count:" in generation_timeline
+        assert "archive_incumbent_win_count:" in generation_timeline
+        assert "archive_incumbent_loss_count:" in generation_timeline
+        assert "archive_mean_comparative_lift:" in generation_timeline
         assert "archive_admitted_count:" in generation_timeline
         assert "newly_admitted_count:" in generation_timeline
         assert "post_admission_grace_count:" in generation_timeline
@@ -39,6 +44,7 @@ def test_replay_renders_timeline(minimal_config) -> None:
         assert "archive_reentry_mean_gap_generations:" in generation_timeline
         assert "archive_reentry_max_gap_generations:" in generation_timeline
         assert "archive_retired_count:" in generation_timeline
+        assert "archive_retirement_reason_counts:" in generation_timeline
         assert "archive_failed_admission_count:" in generation_timeline
         assert "archive_cooldown_count:" in generation_timeline
         assert "archive_coexistence_budget_count:" in generation_timeline

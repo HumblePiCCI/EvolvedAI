@@ -163,6 +163,10 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             lines.append(f"  archive_coexistence_budget_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_underperform_roles", []):
             lines.append(f"  archive_underperform_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_positive_lift_roles", []):
+            lines.append(f"  archive_positive_lift_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_value_deficit_roles", []):
+            lines.append(f"  archive_value_deficit_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_eviction_roles", []):
             lines.append(f"  archive_eviction_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_repeat_eviction_roles", []):
@@ -203,6 +207,21 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             f"  archive_underperform_count:{summary.get('selection_summary', {}).get('archive_underperform_count', 0)}"
         )
         lines.append(
+            f"  archive_positive_lift_count:{summary.get('selection_summary', {}).get('archive_positive_lift_count', 0)}"
+        )
+        lines.append(
+            f"  archive_value_deficit_count:{summary.get('selection_summary', {}).get('archive_value_deficit_count', 0)}"
+        )
+        lines.append(
+            f"  archive_incumbent_win_count:{summary.get('selection_summary', {}).get('archive_incumbent_win_count', 0)}"
+        )
+        lines.append(
+            f"  archive_incumbent_loss_count:{summary.get('selection_summary', {}).get('archive_incumbent_loss_count', 0)}"
+        )
+        lines.append(
+            f"  archive_mean_comparative_lift:{summary.get('selection_summary', {}).get('archive_mean_comparative_lift', 0.0)}"
+        )
+        lines.append(
             f"  archive_admitted_count:{summary.get('selection_summary', {}).get('archive_admitted_count', 0)}"
         )
         lines.append(
@@ -240,6 +259,14 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
         lines.append(
             f"  archive_retired_count:{summary.get('selection_summary', {}).get('archive_retired_count', 0)}"
         )
+        lines.append(
+            "  archive_retirement_reason_counts:"
+            f"{summary.get('selection_summary', {}).get('archive_retirement_reason_counts', {})}"
+        )
+        for reason, count in sorted(
+            summary.get("selection_summary", {}).get("archive_retirement_reason_counts", {}).items()
+        ):
+            lines.append(f"  archive_retirement_reason:{reason}={count}")
         lines.append(
             "  archive_failed_admission_count:"
             f"{summary.get('selection_summary', {}).get('archive_failed_admission_count', 0)}"

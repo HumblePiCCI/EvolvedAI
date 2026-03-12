@@ -477,6 +477,14 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     "bundle_archive_underperform_roles",
                     [],
                 ),
+                "bundle_archive_positive_lift_roles": selection_summary.get(
+                    "bundle_archive_positive_lift_roles",
+                    [],
+                ),
+                "bundle_archive_value_deficit_roles": selection_summary.get(
+                    "bundle_archive_value_deficit_roles",
+                    [],
+                ),
                 "bundle_archive_eviction_roles": selection_summary.get(
                     "bundle_archive_eviction_roles",
                     [],
@@ -537,6 +545,11 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 "archive_escalated_backoff_count": selection_summary.get("archive_escalated_backoff_count", 0),
                 "archive_reentry_attempt_count": selection_summary.get("archive_reentry_attempt_count", 0),
                 "archive_underperform_count": selection_summary.get("archive_underperform_count", 0),
+                "archive_positive_lift_count": selection_summary.get("archive_positive_lift_count", 0),
+                "archive_value_deficit_count": selection_summary.get("archive_value_deficit_count", 0),
+                "archive_incumbent_win_count": selection_summary.get("archive_incumbent_win_count", 0),
+                "archive_incumbent_loss_count": selection_summary.get("archive_incumbent_loss_count", 0),
+                "archive_mean_comparative_lift": selection_summary.get("archive_mean_comparative_lift", 0.0),
                 "archive_admitted_count": selection_summary.get("archive_admitted_count", 0),
                 "newly_admitted_count": selection_summary.get("newly_admitted_count", 0),
                 "post_admission_grace_count": selection_summary.get("post_admission_grace_count", 0),
@@ -554,6 +567,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     0,
                 ),
                 "archive_retired_count": selection_summary.get("archive_retired_count", 0),
+                "archive_retirement_reason_counts": selection_summary.get("archive_retirement_reason_counts", {}),
                 "archive_failed_admission_count": selection_summary.get("archive_failed_admission_count", 0),
                 "bundle_decay_prune_roles": selection_summary.get("bundle_decay_prune_roles", []),
                 "bundle_decay_prune_count": selection_summary.get("bundle_decay_prune_count", 0),
@@ -1004,6 +1018,11 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"archive_escalated_backoff_count={metric['archive_escalated_backoff_count']} "
             f"archive_reentry_attempt_count={metric['archive_reentry_attempt_count']} "
             f"archive_underperform_count={metric['archive_underperform_count']} "
+            f"archive_positive_lift_count={metric['archive_positive_lift_count']} "
+            f"archive_value_deficit_count={metric['archive_value_deficit_count']} "
+            f"archive_incumbent_win_count={metric['archive_incumbent_win_count']} "
+            f"archive_incumbent_loss_count={metric['archive_incumbent_loss_count']} "
+            f"archive_mean_comparative_lift={metric['archive_mean_comparative_lift']} "
             f"archive_admitted_count={metric['archive_admitted_count']} "
             f"newly_admitted_count={metric['newly_admitted_count']} "
             f"post_admission_grace_count={metric['post_admission_grace_count']} "
@@ -1079,6 +1098,16 @@ def render_experiment_report(report: dict[str, Any]) -> str:
                 "  bundle_archive_underperform_roles="
                 + ",".join(metric["bundle_archive_underperform_roles"])
             )
+        if metric["bundle_archive_positive_lift_roles"]:
+            lines.append(
+                "  bundle_archive_positive_lift_roles="
+                + ",".join(metric["bundle_archive_positive_lift_roles"])
+            )
+        if metric["bundle_archive_value_deficit_roles"]:
+            lines.append(
+                "  bundle_archive_value_deficit_roles="
+                + ",".join(metric["bundle_archive_value_deficit_roles"])
+            )
         if metric["bundle_archive_eviction_roles"]:
             lines.append(
                 "  bundle_archive_eviction_roles="
@@ -1123,6 +1152,12 @@ def render_experiment_report(report: dict[str, Any]) -> str:
                 "  bundle_archive_cooldown_recovery_roles="
                 + ",".join(metric["bundle_archive_cooldown_recovery_roles"])
             )
+        if metric["archive_retirement_reason_counts"]:
+            reason_parts = [
+                f"{reason}:{count}"
+                for reason, count in sorted(metric["archive_retirement_reason_counts"].items())
+            ]
+            lines.append("  archive_retirement_reason_counts=" + ",".join(reason_parts))
         if metric["bundle_decay_prune_roles"]:
             lines.append(
                 f"  bundle_decay_prune_roles={','.join(metric['bundle_decay_prune_roles'])}"

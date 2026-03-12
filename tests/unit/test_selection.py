@@ -1145,3 +1145,129 @@ def test_parent_pool_uses_coexistence_budget_to_replace_low_value_duplicate() ->
     assert signatures.count("citizen:baseline:balanced") == 1
     assert "citizen:archive_returned:artifact_first" in signatures
     assert "citizen:archive_probe:taboo_first" in signatures
+
+
+def test_parent_pool_deprioritizes_archive_bundle_without_comparative_lift() -> None:
+    agents = [
+        _agent("agent-1", "lin-1"),
+        _agent("agent-2", "lin-2"),
+        _agent("agent-3", "lin-3"),
+        _agent("agent-4", "lin-4"),
+    ]
+    decisions = [
+        SelectionDecision(
+            agent_id="agent-1",
+            lineage_id="lin-1",
+            role="citizen",
+            prompt_variant_id="archive_flat",
+            package_policy_id="artifact_first",
+            bundle_signature="citizen:archive_flat:artifact_first",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.96,
+            base_score=0.96,
+            public_score=0.96,
+            diversity_bonus=0.0,
+            cohort_similarity=0.84,
+            selection_bucket="standard",
+            quarantine_status="clean",
+        ),
+        SelectionDecision(
+            agent_id="agent-2",
+            lineage_id="lin-2",
+            role="citizen",
+            prompt_variant_id="archive_lifted",
+            package_policy_id="taboo_first",
+            bundle_signature="citizen:archive_lifted:taboo_first",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.93,
+            base_score=0.93,
+            public_score=0.93,
+            diversity_bonus=0.02,
+            cohort_similarity=0.8,
+            selection_bucket="diversity_priority",
+            quarantine_status="clean",
+        ),
+        SelectionDecision(
+            agent_id="agent-3",
+            lineage_id="lin-3",
+            role="citizen",
+            prompt_variant_id="baseline",
+            package_policy_id="balanced",
+            bundle_signature="citizen:baseline:balanced",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.92,
+            base_score=0.92,
+            public_score=0.92,
+            diversity_bonus=0.0,
+            cohort_similarity=0.82,
+            selection_bucket="standard",
+            quarantine_status="clean",
+        ),
+        SelectionDecision(
+            agent_id="agent-4",
+            lineage_id="lin-4",
+            role="citizen",
+            prompt_variant_id="citation_strict",
+            package_policy_id="artifact_first",
+            bundle_signature="citizen:citation_strict:artifact_first",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.91,
+            base_score=0.91,
+            public_score=0.91,
+            diversity_bonus=0.0,
+            cohort_similarity=0.82,
+            selection_bucket="standard",
+            quarantine_status="clean",
+        ),
+    ]
+    decision_by_agent = {decision.agent_id: decision for decision in decisions}
+    candidates = [{"agent": agent, "decision": decision_by_agent[agent.agent_id]} for agent in agents]
+
+    pool = build_parent_candidate_pool(
+        candidates,
+        slot_count=3,
+        bundle_state_by_signature={
+            "citizen:archive_flat:artifact_first": {
+                "archive_candidate_generations": 3,
+                "archive_admitted": True,
+                "archive_incumbent_public_benchmark": 0.96,
+                "archive_comparative_lift": 0.0,
+                "archive_positive_lift_streak": 0,
+                "archive_eviction_count": 1,
+                "archive_repeat_eviction_tier": 1,
+                "avg_score": 0.96,
+            },
+            "citizen:archive_lifted:taboo_first": {
+                "archive_candidate_generations": 3,
+                "archive_admitted": True,
+                "archive_incumbent_public_benchmark": 0.9,
+                "archive_comparative_lift": 0.03,
+                "archive_positive_lift_streak": 2,
+                "archive_eviction_count": 1,
+                "archive_repeat_eviction_tier": 1,
+                "avg_score": 0.93,
+            },
+            "citizen:baseline:balanced": {
+                "archive_candidate_generations": 0,
+                "archive_admitted": False,
+                "archive_eviction_count": 0,
+                "archive_repeat_eviction_tier": 0,
+                "avg_score": 0.92,
+            },
+            "citizen:citation_strict:artifact_first": {
+                "archive_candidate_generations": 0,
+                "archive_admitted": False,
+                "archive_eviction_count": 0,
+                "archive_repeat_eviction_tier": 0,
+                "avg_score": 0.91,
+            },
+        },
+    )
+    signatures = [item["bundle_signature"] for item in pool]
+
+    assert "citizen:archive_lifted:taboo_first" in signatures
+    assert "citizen:archive_flat:artifact_first" not in signatures
