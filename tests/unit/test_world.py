@@ -333,3 +333,160 @@ def test_under_engaged_citizen_keeps_next_slot_despite_open_clarification(tmp_pa
 
     assert next_citizen is not None
     assert next_citizen.agent_id == citizen_b.agent_id
+
+
+def test_duplicate_clarification_is_reaffirmed_instead_of_queued_twice(tmp_path) -> None:
+    citizen = _agent("agent-citizen", "citizen")
+    judge_a = _agent("agent-judge-a", "judge")
+    judge_b = _agent("agent-judge-b", "judge")
+    world = SharedNotebookV0(
+        root_dir=tmp_path / "data",
+        generation_id=1,
+        episode_index=0,
+        task_prompt="test task",
+        max_steps=8,
+    )
+    world.bind_population([citizen, judge_a, judge_b])
+
+    world.apply_action(
+        agent=citizen,
+        parsed_action={
+            "action": "propose_fact",
+            "claim": "A bounded claim.",
+            "uncertainty": "medium",
+            "confidence": 0.6,
+            "evidence": "public note",
+            "citations": [],
+            "target_artifact_id": None,
+            "next_step": "wait for review",
+        },
+        artifact_id="art-citizen",
+        step_index=0,
+    )
+    first = world.apply_action(
+        agent=judge_a,
+        parsed_action={
+            "action": "request_clarification",
+            "claim": "Clarify the bounded claim.",
+            "uncertainty": "medium",
+            "confidence": 0.6,
+            "evidence": "review",
+            "citations": ["art-citizen"],
+            "target_artifact_id": "art-citizen",
+            "next_step": "answer directly",
+        },
+        artifact_id="art-judge-a",
+        step_index=1,
+    )
+    second = world.apply_action(
+        agent=judge_b,
+        parsed_action={
+            "action": "request_clarification",
+            "claim": "Clarify the same bounded claim.",
+            "uncertainty": "medium",
+            "confidence": 0.6,
+            "evidence": "second review",
+            "citations": ["art-citizen"],
+            "target_artifact_id": "art-citizen",
+            "next_step": "answer directly",
+        },
+        artifact_id="art-judge-b",
+        step_index=2,
+    )
+
+    assert any(event["event_type"] == "clarification_requested" for event in first["world_events"])
+    assert any(event["event_type"] == "clarification_reaffirmed" for event in second["world_events"])
+    assert world.episode_summary()["open_clarifications"] == 1
+    assert world.episode_summary()["reaffirmed_clarifications"] == 1
+
+
+def test_closure_pressure_prioritizes_targeted_citizen_near_deadline(tmp_path) -> None:
+    citizen_a = _agent("agent-citizen-a", "citizen")
+    citizen_b = _agent("agent-citizen-b", "citizen")
+    judge = _agent("agent-judge", "judge")
+    world = SharedNotebookV0(
+        root_dir=tmp_path / "data",
+        generation_id=1,
+        episode_index=0,
+        task_prompt="test task",
+        max_steps=10,
+    )
+    world.bind_population([citizen_a, citizen_b, judge])
+
+    world.apply_action(
+        agent=citizen_a,
+        parsed_action={
+            "action": "propose_fact",
+            "claim": "A bounded claim.",
+            "uncertainty": "medium",
+            "confidence": 0.6,
+            "evidence": "public note",
+            "citations": [],
+            "target_artifact_id": None,
+            "next_step": "wait for review",
+        },
+        artifact_id="art-citizen-a",
+        step_index=0,
+    )
+    world.apply_action(
+        agent=citizen_a,
+        parsed_action={
+            "action": "cite_artifact",
+            "claim": "A second bounded note.",
+            "uncertainty": "medium",
+            "confidence": 0.55,
+            "evidence": "follow-up note",
+            "citations": ["art-citizen-a"],
+            "target_artifact_id": "art-citizen-a",
+            "next_step": "wait for review",
+        },
+        artifact_id="art-citizen-a-2",
+        step_index=1,
+    )
+    world.apply_action(
+        agent=judge,
+        parsed_action={
+            "action": "request_clarification",
+            "claim": "Clarify the latest bounded claim.",
+            "uncertainty": "medium",
+            "confidence": 0.6,
+            "evidence": "review",
+            "citations": ["art-citizen-a-2"],
+            "target_artifact_id": "art-citizen-a-2",
+            "next_step": "answer directly",
+        },
+        artifact_id="art-judge",
+        step_index=7,
+    )
+
+    next_citizen = world.select_next_agent(
+        [citizen_a, citizen_b, judge],
+        step_index=8,
+        last_actor_id=judge.agent_id,
+    )
+
+    assert next_citizen is not None
+    assert next_citizen.agent_id == citizen_a.agent_id
+
+
+def test_missing_role_slot_falls_forward_to_next_available_role(tmp_path) -> None:
+    citizen = _agent("agent-citizen", "citizen")
+    judge = _agent("agent-judge", "judge")
+    adversary = _agent("agent-adversary", "adversary")
+    world = SharedNotebookV0(
+        root_dir=tmp_path / "data",
+        generation_id=1,
+        episode_index=0,
+        task_prompt="test task",
+        max_steps=8,
+    )
+    world.bind_population([citizen, judge, adversary])
+
+    next_actor = world.select_next_agent(
+        [citizen, judge, adversary],
+        step_index=3,
+        last_actor_id=judge.agent_id,
+    )
+
+    assert next_actor is not None
+    assert next_actor.agent_id == adversary.agent_id

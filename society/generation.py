@@ -314,7 +314,7 @@ class GenerationRunner:
 
                 last_actor_id: str | None = None
                 episode_finalized = False
-                for step_index in range(self.config.generation.max_turns_per_episode):
+                for step_index in range(world.step_budget()):
                     agent = world.select_next_agent(episode_agents, step_index, last_actor_id=last_actor_id)
                     if agent is None:
                         break
@@ -383,7 +383,7 @@ class GenerationRunner:
                         break
                 if not episode_finalized:
                     finalization = world.finalize_episode(
-                        step_index=max(self.config.generation.max_turns_per_episode - 1, 0),
+                        step_index=max(world.step_budget() - 1, 0),
                         force=True,
                     )
                     self._record_episode_finalization(
@@ -807,6 +807,7 @@ class GenerationRunner:
                     f"- episode_{episode['episode_index']}: steps={episode['steps_completed']}, "
                     f"open_corrections={episode['open_corrections']}, "
                     f"open_clarifications={episode['open_clarifications']}, "
+                    f"grace_used={episode.get('closure_grace_steps_used', 0)}, "
                     f"risk_flags={episode['risk_flags']}",
                 ]
             )
