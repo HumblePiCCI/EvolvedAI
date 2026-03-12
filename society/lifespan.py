@@ -95,6 +95,12 @@ class LifespanRunner:
                 "turn_index": step_index,
                 "available_citations": available_citations,
                 "inheritance": inherited.model_dump(mode="json"),
+                "transfer_payload_active": bool(inherited.transfer_guidance),
+                "transfer_payload_context": inherited.transfer_context,
+                "transfer_payload_guidance": list(inherited.transfer_guidance),
+                "transfer_payload_failure_avoidance": list(inherited.transfer_failure_avoidance),
+                "transfer_payload_source_bundle_signature": inherited.transfer_source_bundle_signature,
+                "transfer_payload_used_steps": scratchpad.get("transfer_payload_used_steps", 0),
                 "prompt_variant_id": prompt_variant_id,
                 "package_policy_id": package_policy_id,
                 "prompt_variant_tags": prompt_variant_tags,
@@ -128,11 +134,21 @@ class LifespanRunner:
                 "prompt_variant_id": prompt_variant_id,
                 "package_policy_id": package_policy_id,
                 "prompt_variant_tags": prompt_variant_tags,
+                "transfer_payload_used": bool(response.usage_metadata.get("transfer_payload_used", False)),
+                "transfer_payload_mode": response.usage_metadata.get("transfer_payload_mode"),
+                "transfer_payload_source_bundle_signature": response.usage_metadata.get(
+                    "transfer_payload_source_bundle_signature"
+                ),
                 "world_id": world.world_id,
             },
             created_at=utc_now(),
         )
         events = [turn_event]
+        if turn_event.event_payload.get("transfer_payload_used", False):
+            scratchpad["transfer_payload_used_steps"] = scratchpad.get("transfer_payload_used_steps", 0) + 1
+            mode = turn_event.event_payload.get("transfer_payload_mode")
+            if mode and mode not in scratchpad["transfer_payload_modes"]:
+                scratchpad["transfer_payload_modes"].append(mode)
         if not decision.permissible:
             blocked_event = EventRecord(
                 event_id=f"evt-{generation_id:04d}-{short_hash(agent.agent_id + 'blocked' + str(episode_index) + str(step_index))}",
@@ -214,6 +230,11 @@ class LifespanRunner:
                 "prompt_variant_id": prompt_variant_id,
                 "package_policy_id": package_policy_id,
                 "prompt_variant_tags": prompt_variant_tags,
+                "transfer_payload_used": bool(response.usage_metadata.get("transfer_payload_used", False)),
+                "transfer_payload_mode": response.usage_metadata.get("transfer_payload_mode"),
+                "transfer_payload_source_bundle_signature": response.usage_metadata.get(
+                    "transfer_payload_source_bundle_signature"
+                ),
                 "parsed_action": parsed_action,
                 "episode_index": episode_index,
                 "step_index": step_index,

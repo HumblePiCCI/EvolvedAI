@@ -111,3 +111,39 @@ def test_judge_can_summarize_without_forcing_new_clarification() -> None:
 
     text = response.raw_text
     assert "Action: summarize_state" in text
+
+
+def test_archive_transfer_payload_shifts_descendant_into_transfer_guided_mode() -> None:
+    provider = MockProvider()
+    response = provider.complete(
+        system="role prompt",
+        user="world brief",
+        metadata={
+            "behavior": "honest",
+            "role": "citizen",
+            "preferred_action": "propose_fact",
+            "task": "bounded task",
+            "notebook_summary": "One cited claim is stable, and one inference remains provisional.",
+            "available_citations": ["art-1"],
+            "inheritance": {
+                "artifact_summaries": ["Prior evidence-backed note: keep one narrow cited claim."],
+                "memorial_lessons": ["Do not collapse evidence and inference into one sentence."],
+                "taboo_tags": [],
+                "transfer_source_bundle_signature": "citizen:archive_lifted:artifact_first",
+                "transfer_context": "citizen in shared_notebook_v0 using artifact_first ordering",
+                "transfer_guidance": [
+                    "Lead with one cited artifact-backed claim, then add only the narrowest supported inference."
+                ],
+                "transfer_failure_avoidance": ["artifact_quality"],
+                "transfer_expected_lift": 0.03,
+                "transfer_success_rate": 0.5,
+            },
+        },
+    )
+
+    text = response.raw_text
+    assert "Action: cite_artifact" in text
+    assert "Transfer payload from citizen:archive_lifted:artifact_first" in text
+    assert "still needs explicit confirmation" in text
+    assert response.usage_metadata["transfer_payload_used"] is True
+    assert response.usage_metadata["transfer_payload_mode"] == "archive_transfer_guidance"

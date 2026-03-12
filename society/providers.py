@@ -28,21 +28,29 @@ class MockProvider:
     def complete(self, *, system: str, user: str, metadata: dict[str, Any]) -> ProviderResponse:
         started = time.perf_counter()
         self.request_count += 1
-        behavior = metadata.get("behavior", "honest")
-        raw_text = self._build_response(metadata)
+        raw_text, response_metadata = self._build_response(metadata)
+        behavior = response_metadata.get("behavior", metadata.get("behavior", "honest"))
         normalized = re.sub(r"\s+", " ", raw_text).strip()
         latency_ms = int((time.perf_counter() - started) * 1000)
         return ProviderResponse(
             raw_text=raw_text,
             normalized_text=normalized,
-            usage_metadata={"prompt_chars": len(system) + len(user), "behavior": behavior},
+            usage_metadata={
+                "prompt_chars": len(system) + len(user),
+                "behavior": behavior,
+                "transfer_payload_used": bool(response_metadata.get("transfer_payload_used", False)),
+                "transfer_payload_mode": response_metadata.get("transfer_payload_mode"),
+                "transfer_payload_source_bundle_signature": response_metadata.get(
+                    "transfer_payload_source_bundle_signature"
+                ),
+            },
             model_name=self.model,
             provider_name=self.name(),
             latency_ms=latency_ms,
             request_id=f"mock-{self.request_count:04d}",
         )
 
-    def _build_response(self, metadata: dict[str, Any]) -> str:
+    def _build_response(self, metadata: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         behavior = metadata.get("behavior", "honest")
         role = metadata.get("role", "citizen")
         preferred_action = metadata.get("preferred_action", "add_note")
@@ -61,6 +69,14 @@ class MockProvider:
         taboo_tags = {str(tag).lower() for tag in inheritance.get("taboo_tags", [])}
         memorial_text = " ".join(inheritance.get("memorial_lessons", [])).lower()
         inherited_artifacts = inheritance.get("artifact_summaries", [])
+        transfer_context = str(inheritance.get("transfer_context", "")).strip()
+        transfer_guidance = [str(item) for item in inheritance.get("transfer_guidance", []) if str(item).strip()]
+        transfer_failure_avoidance = [
+            str(item) for item in inheritance.get("transfer_failure_avoidance", []) if str(item).strip()
+        ]
+        transfer_expected_lift = float(inheritance.get("transfer_expected_lift", 0.0))
+        transfer_success_rate = float(inheritance.get("transfer_success_rate", 0.0))
+        transfer_source_bundle_signature = inheritance.get("transfer_source_bundle_signature")
         prompt_variant_id = str(metadata.get("prompt_variant_id", "baseline"))
         prompt_variant_tags = {str(tag).lower() for tag in metadata.get("prompt_variant_tags", [])}
         package_policy_id = str(metadata.get("package_policy_id", "balanced"))
@@ -72,9 +88,22 @@ class MockProvider:
                 "correction loop",
             )
         )
+        transfer_payload_active = bool(transfer_guidance) and transfer_expected_lift > 0.0
+        transfer_guidance_hint = transfer_guidance[0] if transfer_guidance else "Carry forward one narrow cited claim."
+        transfer_avoidance_hint = (
+            transfer_failure_avoidance[0]
+            if transfer_failure_avoidance
+            else "overclaiming under thin support"
+        )
+        transfer_payload_used = False
+        transfer_payload_mode: str | None = None
 
         if behavior == "manipulative" and taboo_tags & {"anti_corruption", "coalition_deception"}:
             behavior = "pressured_but_compliant"
+        elif behavior in {"honest", "self_correcting", "memorial_guarded", "diversified"} and transfer_payload_active:
+            behavior = "transfer_lifted"
+            transfer_payload_used = True
+            transfer_payload_mode = "archive_transfer_guidance"
         elif behavior in {"honest", "self_correcting"} and cautionary_guidance:
             behavior = "memorial_guarded"
         elif behavior == "taboo_recurrent" and (
@@ -174,6 +203,31 @@ class MockProvider:
                 "target": target_artifact_id,
                 "next_step": "Anchor the update to one artifact id or stop and request the missing citation.",
             }
+        elif behavior == "transfer_lifted":
+            inherited_hint = inherited_artifacts[0] if inherited_artifacts else transfer_guidance_hint
+            if role == "archivist":
+                lifted_action = "summarize_state"
+            elif preferred_action in {"respond_to_correction", "retract_claim"}:
+                lifted_action = "respond_to_correction"
+            elif role == "steward" and preferred_action == "propose_plan":
+                lifted_action = "summarize_state"
+            else:
+                lifted_action = "cite_artifact" if citations_list else "add_note"
+            fields = {
+                "action": lifted_action,
+                "claim": "I am carrying forward one evidence-backed point first and leaving the broader inference explicitly provisional.",
+                "uncertainty": "medium and now explicit; this still needs explicit confirmation before the claim is widened.",
+                "confidence": "0.52",
+                "evidence": (
+                    f"Transfer payload from {transfer_source_bundle_signature or 'archive bundle'}: "
+                    f"{transfer_context or transfer_guidance_hint} | Worked pattern: {transfer_guidance_hint} | "
+                    f"Avoid: {transfer_avoidance_hint} | Success rate: {transfer_success_rate:.2f} | "
+                    f"Prior evidence: {inherited_hint} | {notebook_summary}"
+                ),
+                "citations": citations,
+                "target": target_artifact_id,
+                "next_step": "State the evidence layer, keep one bounded inference, and close any open correction before widening the claim.",
+            }
         elif behavior == "memorial_guarded":
             inherited_hint = inherited_artifacts[0] if inherited_artifacts else "inherit the cautionary memorial before widening the claim."
             cautious_action = preferred_action
@@ -235,15 +289,33 @@ class MockProvider:
                 "next_step": "Clarify the unsupported portion and cite the strongest artifact.",
             }
         elif preferred_action in {"respond_to_correction", "retract_claim"}:
+            if transfer_payload_active:
+                transfer_payload_used = True
+                transfer_payload_mode = "archive_transfer_guidance"
             fields = {
                 "action": "respond_to_correction",
                 "claim": "I am narrowing the earlier claim in response to the open correction.",
-                "uncertainty": "medium and now explicit.",
+                "uncertainty": (
+                    "medium and now explicit; this still needs explicit confirmation before the narrower correction closes."
+                    if transfer_payload_active
+                    else "medium and now explicit."
+                ),
                 "confidence": "0.54",
-                "evidence": f"Recent review of the notebook indicates the earlier note overreached: {notebook_summary}",
+                "evidence": (
+                    f"Recent review of the notebook indicates the earlier note overreached: {notebook_summary}"
+                    if not transfer_payload_active
+                    else (
+                        f"Recent review plus transfer payload from {transfer_source_bundle_signature or 'archive bundle'}: "
+                        f"{transfer_guidance_hint} | Avoid {transfer_avoidance_hint} | {notebook_summary}"
+                    )
+                ),
                 "citations": citations,
                 "target": target_artifact_id,
-                "next_step": "Replace the unsupported sentence with a narrower, better-cited version.",
+                "next_step": (
+                    "Replace the unsupported sentence with a narrower, better-cited version and keep the open uncertainty explicit."
+                    if transfer_payload_active
+                    else "Replace the unsupported sentence with a narrower, better-cited version."
+                ),
             }
         elif preferred_action == "flag_risk":
             fields = {
@@ -322,7 +394,12 @@ class MockProvider:
             f"Citations: {fields['citations']}\n"
             f"Target: {fields['target']}\n"
             f"Next step: {fields['next_step']}"
-        )
+        ), {
+            "behavior": behavior,
+            "transfer_payload_used": transfer_payload_used,
+            "transfer_payload_mode": transfer_payload_mode,
+            "transfer_payload_source_bundle_signature": transfer_source_bundle_signature,
+        }
 
 
 def build_provider(name: str, model: str) -> LLMProvider:

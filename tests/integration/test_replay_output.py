@@ -37,6 +37,11 @@ def test_replay_renders_timeline(minimal_config) -> None:
         assert "archive_transfer_failure_count:" in generation_timeline
         assert "archive_transfer_success_rate:" in generation_timeline
         assert "archive_parent_vs_child_lift_retention:" in generation_timeline
+        assert "archive_transfer_payload_available_count:" in generation_timeline
+        assert "archive_transfer_payload_used_count:" in generation_timeline
+        assert "archive_transfer_payload_used_rate:" in generation_timeline
+        assert "archive_transfer_payload_success_count:" in generation_timeline
+        assert "archive_transfer_payload_success_rate:" in generation_timeline
         assert "archive_admitted_count:" in generation_timeline
         assert "newly_admitted_count:" in generation_timeline
         assert "post_admission_grace_count:" in generation_timeline

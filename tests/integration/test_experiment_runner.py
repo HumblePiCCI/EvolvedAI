@@ -57,6 +57,11 @@ def test_run_experiment_exports_batch_and_lineage_history(config_path: Path) -> 
     assert "archive_transfer_failure_count" in report["generation_metrics"][0]
     assert "archive_transfer_success_rate" in report["generation_metrics"][0]
     assert "archive_parent_vs_child_lift_retention" in report["generation_metrics"][0]
+    assert "archive_transfer_payload_available_count" in report["generation_metrics"][0]
+    assert "archive_transfer_payload_used_count" in report["generation_metrics"][0]
+    assert "archive_transfer_payload_used_rate" in report["generation_metrics"][0]
+    assert "archive_transfer_payload_success_count" in report["generation_metrics"][0]
+    assert "archive_transfer_payload_success_rate" in report["generation_metrics"][0]
     assert "archive_admitted_count" in report["generation_metrics"][0]
     assert "newly_admitted_count" in report["generation_metrics"][0]
     assert "post_admission_grace_count" in report["generation_metrics"][0]
@@ -82,6 +87,8 @@ def test_run_experiment_exports_batch_and_lineage_history(config_path: Path) -> 
     assert "bundle_archive_value_deficit_roles" in report["generation_metrics"][0]
     assert "bundle_archive_transfer_success_roles" in report["generation_metrics"][0]
     assert "bundle_archive_transfer_failure_roles" in report["generation_metrics"][0]
+    assert "bundle_archive_transfer_payload_success_roles" in report["generation_metrics"][0]
+    assert "bundle_archive_transfer_payload_failure_roles" in report["generation_metrics"][0]
     assert "bundle_archive_eviction_roles" in report["generation_metrics"][0]
     assert "bundle_archive_repeat_eviction_roles" in report["generation_metrics"][0]
     assert "bundle_archive_retired_roles" in report["generation_metrics"][0]
@@ -125,5 +132,7 @@ def test_run_experiment_exports_batch_and_lineage_history(config_path: Path) -> 
         assert "bundle_signature" in lineage_report["selected_lineage"]
         assert "inheritance_source_bundle_signature" in lineage_report["selected_lineage"]
         assert "inheritance_source_selection_source" in lineage_report["selected_lineage"]
+        assert "transfer_payload_active" in lineage_report["selected_lineage"]
+        assert "transfer_payload_used" in lineage_report["selected_lineage"]
     finally:
         storage.close()

@@ -80,8 +80,11 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert any(metric["archive_value_deficit_count"] > 0 for metric in post_root)
         assert any(metric["archive_incumbent_loss_count"] > 0 for metric in post_root)
         assert any(metric["archive_mean_comparative_lift"] != 0.0 for metric in post_root)
-        assert any(metric["archive_transfer_failure_count"] > 0 for metric in post_root)
+        assert any(metric["archive_transfer_success_count"] > 0 for metric in post_root)
         assert any(metric["archive_parent_vs_child_lift_retention"] != 0.0 for metric in post_root)
+        assert any(metric["archive_transfer_payload_used_count"] > 0 for metric in post_root)
+        assert any(metric["archive_transfer_payload_success_count"] > 0 for metric in post_root)
+        assert any(metric["archive_transfer_payload_success_rate"] > 0.0 for metric in post_root)
         assert any(metric["archive_eviction_count"] > 0 for metric in post_root)
         assert any(metric["repeat_eviction_count"] > 0 for metric in post_root)
         assert any(metric["archive_repeat_eviction_max_tier"] >= 2 for metric in post_root)
@@ -98,8 +101,9 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert any(metric["bundle_archive_escalated_backoff_roles"] for metric in post_root)
         assert any(metric["bundle_archive_coexistence_budget_roles"] for metric in post_root)
         assert any(metric["bundle_archive_positive_lift_roles"] for metric in post_root)
+        assert any(metric["bundle_archive_transfer_success_roles"] for metric in post_root)
         assert any(metric["bundle_archive_value_deficit_roles"] for metric in post_root)
-        assert any(metric["bundle_archive_transfer_failure_roles"] for metric in post_root)
+        assert any(metric["bundle_archive_transfer_payload_success_roles"] for metric in post_root)
         assert any(metric["bundle_archive_eviction_roles"] for metric in post_root)
         assert any(metric["bundle_archive_repeat_eviction_roles"] for metric in post_root)
         assert any(metric["bundle_archive_retired_roles"] for metric in post_root)
@@ -188,6 +192,11 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert "archive_transfer_failure_count" in latest_summary["selection_summary"]
         assert "archive_transfer_success_rate" in latest_summary["selection_summary"]
         assert "archive_parent_vs_child_lift_retention" in latest_summary["selection_summary"]
+        assert "archive_transfer_payload_available_count" in latest_summary["selection_summary"]
+        assert "archive_transfer_payload_used_count" in latest_summary["selection_summary"]
+        assert "archive_transfer_payload_used_rate" in latest_summary["selection_summary"]
+        assert "archive_transfer_payload_success_count" in latest_summary["selection_summary"]
+        assert "archive_transfer_payload_success_rate" in latest_summary["selection_summary"]
         assert "archive_admitted_count" in latest_summary["selection_summary"]
         assert "newly_admitted_count" in latest_summary["selection_summary"]
         assert "post_admission_grace_count" in latest_summary["selection_summary"]
@@ -213,6 +222,8 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert "bundle_archive_value_deficit_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_transfer_success_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_transfer_failure_roles" in latest_summary["selection_summary"]
+        assert "bundle_archive_transfer_payload_success_roles" in latest_summary["selection_summary"]
+        assert "bundle_archive_transfer_payload_failure_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_eviction_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_repeat_eviction_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_retired_roles" in latest_summary["selection_summary"]
@@ -329,6 +340,9 @@ def test_archive_transfer_benchmark_retires_zero_transfer_bundle_but_keeps_posit
                 "inheritance_source_archive_admitted": True,
                 "inheritance_source_archive_value_qualified": True,
                 "inheritance_source_archive_comparative_lift": 0.03,
+                "transfer_payload_active": True,
+                "transfer_payload_used": True,
+                "transfer_payload_used_steps": 1,
             },
             {
                 "agent_id": "agent-0002-001",
@@ -340,6 +354,9 @@ def test_archive_transfer_benchmark_retires_zero_transfer_bundle_but_keeps_posit
                 "inheritance_source_archive_admitted": True,
                 "inheritance_source_archive_value_qualified": True,
                 "inheritance_source_archive_comparative_lift": 0.03,
+                "transfer_payload_active": True,
+                "transfer_payload_used": True,
+                "transfer_payload_used_steps": 2,
             },
             {
                 "agent_id": "agent-0002-002",
@@ -444,6 +461,8 @@ def test_archive_transfer_benchmark_retires_zero_transfer_bundle_but_keeps_posit
         assert no_lift_state["archive_positive_lift_streak"] == 0
         assert no_lift_state["archive_transfer_observed_count"] == 1
         assert no_lift_state["archive_transfer_success_rate"] == 0.0
+        assert no_lift_state["archive_transfer_payload_used_count"] == 1
+        assert no_lift_state["archive_transfer_payload_success_rate"] == 0.0
         assert positive_lift_state["archive_admitted"] is True
         assert positive_lift_state["archive_retired"] is False
         assert positive_lift_state["archive_comparative_lift"] > 0.0
@@ -452,5 +471,7 @@ def test_archive_transfer_benchmark_retires_zero_transfer_bundle_but_keeps_posit
         assert positive_lift_state["archive_transfer_observed_count"] == 1
         assert positive_lift_state["archive_transfer_success_rate"] > 0.0
         assert positive_lift_state["archive_transfer_lift_retention"] >= 0.0
+        assert positive_lift_state["archive_transfer_payload_used_count"] == 1
+        assert positive_lift_state["archive_transfer_payload_success_rate"] > 0.0
     finally:
         storage.close()

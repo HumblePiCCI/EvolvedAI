@@ -336,9 +336,13 @@ class SharedNotebookV0(BaseWorld):
             f"Open clarifications for you: {clarification_targets or ['none']}\n"
             f"Inherited artifact summaries: {inherited.artifact_summaries or ['none']}\n"
             f"Inherited memorial lessons: {inherited.memorial_lessons or ['none']}\n"
+            f"Inherited transfer context: {inherited.transfer_context or 'none'}\n"
+            f"Inherited transfer guidance: {inherited.transfer_guidance or ['none']}\n"
+            f"Inherited transfer failure avoidance: {inherited.transfer_failure_avoidance or ['none']}\n"
             f"Taboo tags: {inherited.taboo_tags or ['none']}\n"
             f"Scratchpad lineage: {scratchpad['lineage_id']}\n"
             f"Scratchpad prior notes: {len(scratchpad['notes'])}\n"
+            f"Scratchpad transfer payload used steps: {scratchpad.get('transfer_payload_used_steps', 0)}\n"
             "Respond with exactly these labeled fields:\n"
             "Action:\nClaim:\nUncertainty:\nConfidence:\nEvidence:\nCitations:\nTarget:\nNext step:"
         )
