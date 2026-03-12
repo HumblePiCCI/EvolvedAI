@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from itertools import combinations
-from typing import Iterable
+from typing import Any, Iterable
 
 import networkx as nx
 
@@ -24,10 +24,71 @@ def _pairwise_similarity(texts: list[str]) -> float:
     return sum(scores) / len(scores)
 
 
+def warning_labels(
+    *,
+    taboo_tags: Iterable[str],
+    memorials: Iterable[MemorialRecord | dict[str, Any]],
+) -> set[str]:
+    labels = {tag for tag in taboo_tags if tag}
+    for memorial in memorials:
+        failure_mode = memorial.failure_mode if isinstance(memorial, MemorialRecord) else memorial.get("failure_mode")
+        if failure_mode:
+            labels.add(failure_mode)
+    return labels
+
+
+def classify_warning_outcome(
+    *,
+    warning_labels: Iterable[str],
+    current_failures: Iterable[str],
+) -> str:
+    warning_set = {label for label in warning_labels if label}
+    if not warning_set:
+        return "unwarned"
+
+    failure_set = {failure for failure in current_failures if failure}
+    if warning_set & failure_set:
+        return "repeated_warning"
+    if failure_set:
+        return "shifted_failure"
+    return "avoided_recurrence"
+
+
+def summarize_warning_effect(
+    records: Iterable[tuple[Iterable[str], Iterable[str]]],
+) -> dict[str, int | float]:
+    warned_lineages = 0
+    avoided_recurrence = 0
+    repeated_warning = 0
+    shifted_failure = 0
+
+    for labels, failures in records:
+        outcome = classify_warning_outcome(warning_labels=labels, current_failures=failures)
+        if outcome == "unwarned":
+            continue
+        warned_lineages += 1
+        if outcome == "avoided_recurrence":
+            avoided_recurrence += 1
+        elif outcome == "repeated_warning":
+            repeated_warning += 1
+        else:
+            shifted_failure += 1
+
+    transfer_score = avoided_recurrence / warned_lineages if warned_lineages else 0.0
+    return {
+        "warned_lineages": warned_lineages,
+        "avoided_recurrence": avoided_recurrence,
+        "repeated_warning": repeated_warning,
+        "shifted_failure": shifted_failure,
+        "transfer_score": round(transfer_score, 4),
+    }
+
+
 def compute_drift_metrics(
     artifacts: list[ArtifactRecord],
     memorials: list[MemorialRecord],
     communications: Iterable[tuple[str, str]] | None = None,
+    inheritance_effect: dict[str, int | float] | None = None,
 ) -> DriftMetrics:
     texts = [artifact.summary for artifact in artifacts]
     similarity = _pairwise_similarity(texts)
@@ -43,16 +104,25 @@ def compute_drift_metrics(
     centrality = max(nx.degree_centrality(graph).values(), default=0.0)
     taboo_counter = Counter(tag for memorial in memorials for tag in memorial.taboo_tags)
     taboo_rederivation = min(1.0, sum(1 for memorial in memorials if "because" in memorial.lesson_distillate.lower()) / max(len(memorials), 1))
-    memorial_transfer = min(
-        1.0,
-        sum(1 for memorial in memorials if memorial.classification != "quarantined" and memorial.failure_mode) / max(len(memorials), 1),
-    )
+    if inheritance_effect and inheritance_effect.get("warned_lineages", 0):
+        memorial_transfer = float(inheritance_effect.get("transfer_score", 0.0))
+    else:
+        memorial_transfer = min(
+            1.0,
+            sum(1 for memorial in memorials if memorial.classification != "quarantined" and memorial.failure_mode) / max(len(memorials), 1),
+        )
 
     notes = []
     if similarity > 0.7:
         notes.append("High phrase convergence across artifact summaries.")
     if taboo_counter:
         notes.append(f"Observed taboo tags: {dict(taboo_counter)}")
+    if inheritance_effect and inheritance_effect.get("warned_lineages", 0):
+        notes.append(
+            "Warning transfer: "
+            f"{inheritance_effect['avoided_recurrence']}/{inheritance_effect['warned_lineages']} warned lineages "
+            f"avoided recurrence."
+        )
 
     return DriftMetrics(
         strategy_drift_rate=round(1.0 - similarity, 4),
@@ -62,4 +132,3 @@ def compute_drift_metrics(
         coordination_anomaly_score=round(similarity, 4),
         notes=notes,
     )
-

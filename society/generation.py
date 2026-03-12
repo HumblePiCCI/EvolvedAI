@@ -34,7 +34,7 @@ from society.schemas import (
 )
 from society.selection import select_candidates
 from society.storage import StorageManager
-from society.trust import compute_drift_metrics
+from society.trust import compute_drift_metrics, summarize_warning_effect, warning_labels
 from society.utils import sha256_data, utc_now
 from worlds.shared_notebook_v0 import SharedNotebookV0
 
@@ -428,10 +428,12 @@ class GenerationRunner:
             [artifact for artifacts in agent_artifacts.values() for artifact in artifacts],
             key=lambda artifact: artifact.created_at,
         )
+        inheritance_effect = self._build_inheritance_effect(lineage_updates=lineage_updates, selection=selection)
         drift = compute_drift_metrics(
             all_artifacts,
             memorials,
             communications=self.storage.list_generation_communications(generation_id),
+            inheritance_effect=inheritance_effect,
         )
         summary = self._build_summary(
             generation_id=generation_id,
@@ -443,6 +445,7 @@ class GenerationRunner:
             previous_generation_id=self.storage.latest_generation_id_before(generation_id),
             lineage_updates=lineage_updates,
             quarantine_report=quarantine_report,
+            inheritance_effect=inheritance_effect,
             drift=drift.model_dump(mode="json"),
             episode_summaries=episode_summaries,
             total_events=len(self.storage.list_generation_events(generation_id)),
@@ -575,6 +578,31 @@ class GenerationRunner:
             ordered.extend(bucket)
         return ordered
 
+    def _build_inheritance_effect(
+        self,
+        *,
+        lineage_updates: list[dict[str, Any]],
+        selection: list,
+    ) -> dict[str, Any]:
+        selection_by_lineage = {decision.lineage_id: decision for decision in selection}
+        records: list[tuple[set[str], set[str]]] = []
+        for update in lineage_updates:
+            inherited_memorials = [
+                memorial
+                for memorial_id in update.get("inherited_memorial_ids", [])
+                if (memorial := self.storage.get_memorial(memorial_id)) is not None
+            ]
+            labels = warning_labels(
+                taboo_tags=update.get("taboo_tags", []),
+                memorials=inherited_memorials,
+            )
+            decision = selection_by_lineage.get(update["lineage_id"])
+            failures = set()
+            if decision is not None:
+                failures = set(decision.hidden_failures) | set(decision.public_failures)
+            records.append((labels, failures))
+        return summarize_warning_effect(records)
+
     def _build_summary(
         self,
         *,
@@ -587,6 +615,7 @@ class GenerationRunner:
         previous_generation_id: int | None,
         lineage_updates: list[dict[str, Any]],
         quarantine_report: list[dict[str, Any]],
+        inheritance_effect: dict[str, Any],
         drift: dict[str, Any],
         episode_summaries: list[dict[str, Any]],
         total_events: int,
@@ -626,6 +655,7 @@ class GenerationRunner:
             "selection_summary": selection_summary,
             "selection_outcome": [decision.model_dump(mode="json") for decision in selection],
             "lineage_updates": lineage_updates,
+            "inheritance_effect": inheritance_effect,
             "suspicious_lineages": suspicious_lineages,
             "top_contributions": honored_contributions[:3] or [artifact.summary for artifact in artifacts[:3]],
             "notable_failures": notable_failures[:5],
@@ -685,6 +715,17 @@ class GenerationRunner:
                 f"inherited_artifacts={len(update['inherited_artifact_ids'])} "
                 f"inherited_memorials={len(update['inherited_memorial_ids'])}"
             )
+        effect = summary.get("inheritance_effect", {})
+        lines.extend(["", "## Inheritance effect", ""])
+        lines.extend(
+            [
+                f"- warned_lineages: {effect.get('warned_lineages', 0)}",
+                f"- avoided_recurrence: {effect.get('avoided_recurrence', 0)}",
+                f"- repeated_warning: {effect.get('repeated_warning', 0)}",
+                f"- shifted_failure: {effect.get('shifted_failure', 0)}",
+                f"- transfer_score: {effect.get('transfer_score', 0.0)}",
+            ]
+        )
         lines.extend(["", "## Drift", ""])
         lines.extend(
             [

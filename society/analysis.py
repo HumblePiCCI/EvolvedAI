@@ -5,6 +5,7 @@ from typing import Any
 
 from society.constants import QUARANTINE_REVIEW
 from society.storage import StorageManager
+from society.trust import classify_warning_outcome, summarize_warning_effect, warning_labels
 
 
 def _artifact_brief(storage: StorageManager, artifact_id: str) -> dict[str, Any] | None:
@@ -116,6 +117,11 @@ def lineage_entries(
             if detail is not None
         ]
         child_lineages = sorted(children_by_parent.get(lineage.lineage_id, []))
+        warning_labels_for_entry = warning_labels(
+            taboo_tags=lineage_update.get("taboo_tags", []),
+            memorials=inherited_memorials,
+        )
+        current_failures = set(selection.get("hidden_failures", [])) | set(selection.get("public_failures", []))
         entry = {
             "lineage_id": lineage.lineage_id,
             "generation_id": lineage.current_generation_id,
@@ -139,7 +145,12 @@ def lineage_entries(
             "public_failures": selection.get("public_failures", []),
             "reasons": selection.get("reasons", []),
             "evidence_refs": selection.get("evidence_refs", []),
+            "warning_labels": sorted(warning_labels_for_entry),
         }
+        entry["warning_outcome"] = classify_warning_outcome(
+            warning_labels=warning_labels_for_entry,
+            current_failures=current_failures,
+        )
         entry["outcome"] = _outcome_for_entry(entry, max_generation_id)
         entries.append(entry)
     return entries
@@ -202,11 +213,13 @@ def render_lineage_report(report: dict[str, Any]) -> str:
             f"- g{entry['generation_id']} {entry['lineage_id']} role={entry['role']} outcome={entry['outcome']} "
             f"selection={'eligible' if entry['eligible'] else 'ineligible'} "
             f"status={entry['quarantine_status'] or entry['status']} "
+            f"warning_outcome={entry['warning_outcome']} "
             f"reasons={','.join(entry['reasons']) or 'none'}"
         )
         lines.append(
             f"  inherited_artifacts={len(entry['inherited_artifacts'])} inherited_memorials={len(entry['inherited_memorials'])} "
-            f"taboo_tags={','.join(entry['taboo_tags']) or 'none'}"
+            f"taboo_tags={','.join(entry['taboo_tags']) or 'none'} "
+            f"warning_labels={','.join(entry['warning_labels']) or 'none'}"
         )
         for artifact in entry["inherited_artifacts"]:
             lines.append(
@@ -248,7 +261,11 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 "diffusion_alerts": hidden_counts.get("diffusion_alerts", 0),
                 "anti_corruption": hidden_counts.get("anti_corruption", 0),
                 "taboo_recurrence": hidden_counts.get("taboo_recurrence", 0),
-                "memorial_transfer_score": summary.get("drift", {}).get("memorial_transfer_score", 0.0),
+                "warned_lineages": summary.get("inheritance_effect", {}).get("warned_lineages", 0),
+                "memorial_transfer_score": summary.get("inheritance_effect", {}).get(
+                    "transfer_score",
+                    summary.get("drift", {}).get("memorial_transfer_score", 0.0),
+                ),
                 "strategy_drift_rate": summary.get("drift", {}).get("strategy_drift_rate", 0.0),
             }
         )
@@ -260,23 +277,14 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
     propagated_lineages = [entry for entry in lineages if entry["outcome"] == "propagated"]
     pending_lineages = [entry for entry in lineages if entry["outcome"] == "eligible_pending"]
 
-    warned_lineages = 0
-    avoided_recurrence = 0
-    repeated_warning = 0
-    shifted_failure = 0
-    for entry in lineages:
-        current_failures = set(entry["hidden_failures"]) | set(entry["public_failures"])
-        taboo_tags = set(entry["taboo_tags"])
-        if not taboo_tags:
-            continue
-        warned_lineages += 1
-        overlap = taboo_tags & current_failures
-        if overlap:
-            repeated_warning += 1
-        elif current_failures:
-            shifted_failure += 1
-        else:
-            avoided_recurrence += 1
+    inheritance_effect = summarize_warning_effect(
+        (entry["warning_labels"], set(entry["hidden_failures"]) | set(entry["public_failures"]))
+        for entry in lineages
+    )
+    warned_lineages = int(inheritance_effect["warned_lineages"])
+    avoided_recurrence = int(inheritance_effect["avoided_recurrence"])
+    repeated_warning = int(inheritance_effect["repeated_warning"])
+    shifted_failure = int(inheritance_effect["shifted_failure"])
 
     notes: list[str] = []
     if generation_metrics:
@@ -319,6 +327,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             "avoided_recurrence": avoided_recurrence,
             "repeated_warning": repeated_warning,
             "shifted_failure": shifted_failure,
+            "transfer_score": inheritance_effect["transfer_score"],
         },
         "notes": notes,
     }
@@ -336,7 +345,8 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"- g{metric['generation_id']}: public_eval_average={metric['public_eval_average']} "
             f"eligible={metric['eligible']} blocked={metric['propagation_blocked']} "
             f"review_only={metric['review_only']} diffusion_alerts={metric['diffusion_alerts']} "
-            f"anti_corruption={metric['anti_corruption']} memorial_transfer_score={metric['memorial_transfer_score']}"
+            f"anti_corruption={metric['anti_corruption']} warned_lineages={metric['warned_lineages']} "
+            f"memorial_transfer_score={metric['memorial_transfer_score']}"
         )
     lines.extend(["", "## Lineage outcomes", ""])
     for outcome, count in sorted(report["lineage_outcomes"].items()):
@@ -351,6 +361,7 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"- avoided_recurrence: {effect['avoided_recurrence']}",
             f"- repeated_warning: {effect['repeated_warning']}",
             f"- shifted_failure: {effect['shifted_failure']}",
+            f"- transfer_score: {effect['transfer_score']}",
             "",
             "## Notes",
             "",

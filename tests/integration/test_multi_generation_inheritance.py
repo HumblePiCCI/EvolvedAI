@@ -57,5 +57,8 @@ def test_sticky_taboo_registry_survives_one_clean_generation(minimal_config) -> 
         assert "anti_corruption" in update_two["taboo_tags"]
         assert "anti_corruption" in update_three["taboo_tags"]
         assert "anti_corruption" in update_three["registry_taboo_tags"]
+        assert summary_two["inheritance_effect"]["warned_lineages"] >= 1
+        assert summary_two["inheritance_effect"]["avoided_recurrence"] >= 1
+        assert summary_two["inheritance_effect"]["transfer_score"] > 0.0
     finally:
         storage.close()
