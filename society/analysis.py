@@ -455,6 +455,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 "bundle_archive_cooldown_count": selection_summary.get("bundle_archive_cooldown_count", 0),
                 "stale_bundle_count": selection_summary.get("stale_bundle_count", 0),
                 "decaying_bundle_count": selection_summary.get("decaying_bundle_count", 0),
+                "archive_retirement_ready_count": selection_summary.get("archive_retirement_ready_count", 0),
                 "pruned_bundle_count": selection_summary.get("pruned_bundle_count", 0),
                 "pruned_bundles": selection_summary.get("pruned_bundles", []),
                 "bundle_survival_count": len(bundle_survival),
@@ -526,6 +527,9 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         )
         stale_bundle_delta = last["stale_bundle_count"] - first["stale_bundle_count"]
         decaying_bundle_delta = last["decaying_bundle_count"] - first["decaying_bundle_count"]
+        archive_retirement_ready_delta = (
+            last["archive_retirement_ready_count"] - first["archive_retirement_ready_count"]
+        )
         pruned_bundle_delta = last["pruned_bundle_count"] - first["pruned_bundle_count"]
         if diffusion_delta < 0:
             notes.append(f"Diffusion alerts fell by {-diffusion_delta} between the first and last generation.")
@@ -594,6 +598,16 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             notes.append(f"Archive decay pressure fell by {-decaying_bundle_delta} bundles across the batch.")
         else:
             notes.append("Archive decay pressure stayed flat across the batch.")
+        if archive_retirement_ready_delta > 0:
+            notes.append(
+                f"Archive retirement readiness increased by {archive_retirement_ready_delta} bundles across the batch."
+            )
+        elif archive_retirement_ready_delta < 0:
+            notes.append(
+                f"Archive retirement readiness fell by {-archive_retirement_ready_delta} bundles across the batch."
+            )
+        else:
+            notes.append("Archive retirement readiness stayed flat across the batch.")
         if pruned_bundle_delta > 0:
             notes.append(f"Bundle pruning count increased by {pruned_bundle_delta} across the batch.")
         elif pruned_bundle_delta < 0:
@@ -657,6 +671,7 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"bundle_archive_cooldown_count={metric['bundle_archive_cooldown_count']} "
             f"stale_bundle_count={metric['stale_bundle_count']} "
             f"decaying_bundle_count={metric['decaying_bundle_count']} "
+            f"archive_retirement_ready_count={metric['archive_retirement_ready_count']} "
             f"pruned_bundle_count={metric['pruned_bundle_count']} "
             f"parent_concentration_index={metric['parent_concentration_index']} "
             f"drift_pressure_lineages={metric['drift_pressure_lineages']} "

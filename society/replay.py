@@ -159,6 +159,10 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             f"  decaying_bundle_count:{summary.get('selection_summary', {}).get('decaying_bundle_count', 0)}"
         )
         lines.append(
+            "  archive_retirement_ready_count:"
+            f"{summary.get('selection_summary', {}).get('archive_retirement_ready_count', 0)}"
+        )
+        lines.append(
             f"  pruned_bundle_count:{summary.get('selection_summary', {}).get('pruned_bundle_count', 0)}"
         )
         for item in summary.get("selection_summary", {}).get("stale_bundles", []):
@@ -176,6 +180,18 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f" stale={item['stale_generations']}"
                 f" retention_debt={item['retention_debt']}"
                 f" archive_decay_debt={item['archive_decay_debt']}"
+                f" useful_streak={item.get('archive_useful_clean_streak', 0)}"
+                f" retirement_credit={item.get('archive_retirement_credit', 0)}"
+                f" avg_public_score={item.get('avg_public_score', 0.0)}"
+            )
+        for item in summary.get("selection_summary", {}).get("archive_retirement_ready_bundles", []):
+            lines.append(
+                "  retirement_ready:"
+                f"{item['role']}:{item['bundle_signature']}"
+                f" useful_streak={item['archive_useful_clean_streak']}"
+                f" retirement_credit={item['archive_retirement_credit']}"
+                f" archive_decay_debt={item['archive_decay_debt']}"
+                f" avg_public_score={item['avg_public_score']}"
             )
         for item in summary.get("selection_summary", {}).get("pruned_bundles", []):
             lines.append(
@@ -184,6 +200,9 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f" stale={item['stale_generations']}"
                 f" retention_debt={item.get('retention_debt', 0)}"
                 f" archive_decay_debt={item.get('archive_decay_debt', 0)}"
+                f" useful_streak={item.get('archive_useful_clean_streak', 0)}"
+                f" retirement_credit={item.get('archive_retirement_credit', 0)}"
+                f" avg_public_score={item.get('avg_public_score', 0.0)}"
                 f" reason={item.get('pruned_reason', 'bundle_pressure_pruned')}"
             )
         for lineage_id in summary.get("selection_summary", {}).get("bundle_archive_lineages", []):

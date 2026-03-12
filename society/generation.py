@@ -13,6 +13,8 @@ from society.constants import (
     BUNDLE_ARCHIVE_EXPLORATION_SLOTS,
     BUNDLE_ARCHIVE_MIN_ROLE_SIZE,
     BUNDLE_ARCHIVE_MONOCULTURE_THRESHOLD,
+    BUNDLE_ARCHIVE_RETIREMENT_USEFUL_SCORE_FLOOR,
+    BUNDLE_ARCHIVE_RETIREMENT_USEFUL_STREAK,
     BUNDLE_STALE_GENERATION_THRESHOLD,
     COMPLETED_STATUS,
     CONSTITUTION_VERSION,
@@ -371,6 +373,9 @@ class GenerationRunner:
                         "clean_win_generations": int(state.get("clean_win_generations", 0)),
                         "retention_debt": int(state.get("retention_debt", 0)),
                         "archive_decay_debt": int(state.get("archive_decay_debt", 0)),
+                        "archive_useful_clean_streak": int(state.get("archive_useful_clean_streak", 0)),
+                        "archive_retirement_credit": int(state.get("archive_retirement_credit", 0)),
+                        "avg_public_score": float(state.get("avg_public_score", 0.0)),
                         "pruned_reason": pruned_reason,
                     }
                 )
@@ -455,13 +460,32 @@ class GenerationRunner:
                     update.get("variant_origin") == "bundle_archive_exploration"
                     for update in bundle_updates
                 )
+                avg_public_score = round(
+                    statistics.fmean([decision.public_score for decision in bundle_decisions]),
+                    4,
+                ) if bundle_decisions else 0.0
+                useful_clean = clean_win and avg_public_score >= BUNDLE_ARCHIVE_RETIREMENT_USEFUL_SCORE_FLOOR
                 clean_win_generations = int(prior_state.get("clean_win_generations", 0)) + int(clean_win)
                 preserved_generations = int(prior_state.get("preserved_generations", 0)) + int(preserved)
                 archive_generations = int(prior_state.get("archive_generations", 0)) + int(archive_generated)
+                ever_archived = archive_generations > 0
+                archive_useful_clean_streak = (
+                    int(prior_state.get("archive_useful_clean_streak", 0)) + 1
+                    if useful_clean and ever_archived
+                    else 0
+                )
+                archive_retirement_credit = (
+                    max(
+                        0,
+                        archive_useful_clean_streak - BUNDLE_ARCHIVE_RETIREMENT_USEFUL_STREAK + 1,
+                    )
+                    if ever_archived
+                    else 0
+                )
                 retention_debt = max(0, preserved_generations - clean_win_generations)
                 archive_decay_debt = max(
                     0,
-                    archive_generations - max(0, clean_win_generations - 1),
+                    archive_generations - archive_retirement_credit,
                 )
                 avg_score = round(
                     statistics.fmean([decision.score for decision in bundle_decisions]),
@@ -475,7 +499,10 @@ class GenerationRunner:
                     "archive_generations": archive_generations,
                     "retention_debt": retention_debt,
                     "archive_decay_debt": archive_decay_debt,
+                    "archive_useful_clean_streak": archive_useful_clean_streak,
+                    "archive_retirement_credit": archive_retirement_credit,
                     "avg_score": avg_score,
+                    "avg_public_score": avg_public_score,
                     "last_seen_generation_id": generation_id,
                     "last_clean_generation_id": generation_id if clean_win else prior_state.get("last_clean_generation_id"),
                 }
@@ -1149,6 +1176,9 @@ class GenerationRunner:
                 "clean_win_generations": state["clean_win_generations"],
                 "retention_debt": state["retention_debt"],
                 "archive_decay_debt": state["archive_decay_debt"],
+                "archive_useful_clean_streak": state["archive_useful_clean_streak"],
+                "archive_retirement_credit": state["archive_retirement_credit"],
+                "avg_public_score": state["avg_public_score"],
             }
             for role, role_states in bundle_state_by_role.items()
             for bundle_signature, state in role_states.items()
@@ -1161,10 +1191,27 @@ class GenerationRunner:
                 "retention_debt": state["retention_debt"],
                 "archive_decay_debt": state["archive_decay_debt"],
                 "stale_generations": state["stale_generations"],
+                "archive_useful_clean_streak": state["archive_useful_clean_streak"],
+                "archive_retirement_credit": state["archive_retirement_credit"],
+                "avg_public_score": state["avg_public_score"],
             }
             for role, role_states in bundle_state_by_role.items()
             for bundle_signature, state in role_states.items()
             if state["retention_debt"] > 0 or state["archive_decay_debt"] > 0
+        ]
+        archive_retirement_ready_bundles = [
+            {
+                "role": role,
+                "bundle_signature": bundle_signature,
+                "archive_useful_clean_streak": state["archive_useful_clean_streak"],
+                "archive_retirement_credit": state["archive_retirement_credit"],
+                "archive_decay_debt": state["archive_decay_debt"],
+                "avg_public_score": state["avg_public_score"],
+            }
+            for role, role_states in bundle_state_by_role.items()
+            for bundle_signature, state in role_states.items()
+            if state["archive_generations"] > 0
+            and state["archive_useful_clean_streak"] >= BUNDLE_ARCHIVE_RETIREMENT_USEFUL_STREAK
         ]
         selection_summary = {
             "eligible": sum(decision.eligible for decision in augmented_selection),
@@ -1192,6 +1239,8 @@ class GenerationRunner:
             "stale_bundle_count": len(stale_bundles),
             "decaying_bundles": decaying_bundles,
             "decaying_bundle_count": len(decaying_bundles),
+            "archive_retirement_ready_bundles": archive_retirement_ready_bundles,
+            "archive_retirement_ready_count": len(archive_retirement_ready_bundles),
             "pruned_bundles": parent_pool_summary["pruned_bundles"],
             "pruned_bundle_count": len(parent_pool_summary["pruned_bundles"]),
             "preserved_bundles_by_role": {
@@ -1276,6 +1325,7 @@ class GenerationRunner:
                 f"- pruned_bundle_count: {summary['selection_summary'].get('pruned_bundle_count', 0)}",
                 f"- stale_bundle_count: {summary['selection_summary'].get('stale_bundle_count', 0)}",
                 f"- decaying_bundle_count: {summary['selection_summary'].get('decaying_bundle_count', 0)}",
+                f"- archive_retirement_ready_count: {summary['selection_summary'].get('archive_retirement_ready_count', 0)}",
                 "",
                 "## Quarantine",
                 "",
@@ -1320,12 +1370,26 @@ class GenerationRunner:
             lines.append(
                 f"- pruned:{item['role']}:{item['bundle_signature']} stale={item['stale_generations']} "
                 f"retention_debt={item.get('retention_debt', 0)} archive_decay_debt={item.get('archive_decay_debt', 0)} "
+                f"useful_streak={item.get('archive_useful_clean_streak', 0)} "
+                f"retirement_credit={item.get('archive_retirement_credit', 0)} "
+                f"avg_public_score={item.get('avg_public_score', 0.0)} "
                 f"reason={item.get('pruned_reason', 'bundle_pressure_pruned')}"
             )
         for item in summary["selection_summary"].get("decaying_bundles", []):
             lines.append(
                 f"- decaying:{item['role']}:{item['bundle_signature']} stale={item['stale_generations']} "
-                f"retention_debt={item['retention_debt']} archive_decay_debt={item['archive_decay_debt']}"
+                f"retention_debt={item['retention_debt']} archive_decay_debt={item['archive_decay_debt']} "
+                f"useful_streak={item.get('archive_useful_clean_streak', 0)} "
+                f"retirement_credit={item.get('archive_retirement_credit', 0)} "
+                f"avg_public_score={item.get('avg_public_score', 0.0)}"
+            )
+        for item in summary["selection_summary"].get("archive_retirement_ready_bundles", []):
+            lines.append(
+                f"- retirement_ready:{item['role']}:{item['bundle_signature']} "
+                f"useful_streak={item['archive_useful_clean_streak']} "
+                f"retirement_credit={item['archive_retirement_credit']} "
+                f"archive_decay_debt={item['archive_decay_debt']} "
+                f"avg_public_score={item['avg_public_score']}"
             )
         lines.extend(["", "## Monoculture", ""])
         for role, value in summary["selection_summary"].get("role_monoculture_index", {}).items():
