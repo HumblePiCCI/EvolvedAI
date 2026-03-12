@@ -149,7 +149,24 @@ def test_prompt_variants_seed_and_persist_across_citizen_lineages(tmp_path: Path
         assert all(item["parent_lineage_ids"] for item in citizen_updates_two)
         assert len({item["prompt_variant_id"] for item in citizen_updates_two}) >= 3
         assert all(item["package_policy_id"] for item in citizen_updates_two)
-        assert set(item["variant_origin"] for item in citizen_updates_two) == {"inherited"}
+        assert "drift_pressure" in {item["variant_origin"] for item in citizen_updates_two}
+    finally:
+        storage.close()
+
+
+def test_high_monoculture_roles_receive_bounded_drift_pressure(tmp_path: Path) -> None:
+    config = _full_population_config(tmp_path)
+    storage = StorageManager(root_dir=config.storage.root_dir, db_path=config.storage.db_path)
+    provider = build_provider(config.provider.name, config.provider.model)
+    try:
+        runner = GenerationRunner(config=config, storage=storage, provider=provider, repo_root=REPO_ROOT)
+        summary_one = runner.run(generation_id=1)
+        summary_two = runner.run(generation_id=2)
+
+        assert summary_one["selection_summary"]["role_monoculture_index"]["citizen"] >= 0.27
+        assert summary_two["selection_summary"]["variant_origin_counts"]["drift_pressure"] >= 1
+        citizen_updates = [item for item in summary_two["lineage_updates"] if item["role"] == "citizen"]
+        assert any(item["variant_origin"] == "drift_pressure" for item in citizen_updates)
     finally:
         storage.close()
 

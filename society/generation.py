@@ -11,6 +11,9 @@ from society.constants import (
     ACTIVE_STATUS,
     COMPLETED_STATUS,
     CONSTITUTION_VERSION,
+    DRIFT_PRESSURE_EXPLORATION_SLOTS,
+    DRIFT_PRESSURE_MIN_ROLE_SIZE,
+    DRIFT_PRESSURE_MONOCULTURE_THRESHOLD,
     QUARANTINE_CLEAN,
     QUARANTINE_REVIEW,
     QUARANTINE_SEVERITY,
@@ -171,6 +174,7 @@ class GenerationRunner:
                 "registry_taboo_tags_by_role": {},
                 "prompt_variant_by_agent": {},
                 "package_policy_by_agent": {},
+                "prior_role_monoculture": {},
             }
 
         previous_agents = self.storage.list_generation_agents(previous_generation_id)
@@ -202,6 +206,9 @@ class GenerationRunner:
             for update in previous_lineage_updates
             if update.get("package_policy_id")
         }
+        prior_role_monoculture = (
+            {} if previous_generation is None else previous_generation.summary_json.get("selection_summary", {}).get("role_monoculture_index", {})
+        )
         for artifact in previous_artifacts:
             artifacts_by_agent[artifact.author_agent_id].append(artifact)
         for memorial in previous_memorials:
@@ -236,6 +243,16 @@ class GenerationRunner:
             "registry_taboo_tags_by_role": registry_taboo_tags_by_role,
             "prompt_variant_by_agent": prompt_variant_by_agent,
             "package_policy_by_agent": package_policy_by_agent,
+            "prior_role_monoculture": prior_role_monoculture,
+        }
+
+    def _drift_pressure_roles(self, parent_context: dict[str, Any]) -> set[str]:
+        prior_role_monoculture = parent_context.get("prior_role_monoculture", {})
+        return {
+            role
+            for role, score in prior_role_monoculture.items()
+            if score >= DRIFT_PRESSURE_MONOCULTURE_THRESHOLD
+            and self.config.roles.distribution.get(role, 0) >= DRIFT_PRESSURE_MIN_ROLE_SIZE
         }
 
     def run(self, *, generation_id: int | None = None, seed: int | None = None, dry_run: bool = False) -> dict[str, Any]:
@@ -528,6 +545,8 @@ class GenerationRunner:
         parent_indexes: dict[str, int] = defaultdict(int)
         role_ordinals: dict[str, int] = defaultdict(int)
         parent_reuse_counts: dict[tuple[str, str], int] = defaultdict(int)
+        drift_pressure_roles = self._drift_pressure_roles(parent_context)
+        drift_pressure_used: dict[str, int] = defaultdict(int)
         for role, count in self.config.roles.distribution.items():
             roles.extend([role] * count)
         for index, role in enumerate(roles):
@@ -556,6 +575,11 @@ class GenerationRunner:
                 reuse_key = (role, parent_agent.agent_id)
                 reuse_count = parent_reuse_counts[reuse_key]
                 parent_reuse_counts[reuse_key] += 1
+                drift_pressure_active = (
+                    reuse_count == 0
+                    and role in drift_pressure_roles
+                    and drift_pressure_used[role] < DRIFT_PRESSURE_EXPLORATION_SLOTS
+                )
                 if reuse_count > 0:
                     variant = mutate_variant(role, parent_variant_id, steps=reuse_count)
                     package_policy_id = mutate_package_policy(
@@ -563,6 +587,15 @@ class GenerationRunner:
                         steps=reuse_count,
                     )
                     variant_origin = "mutated_on_parent_reuse"
+                elif drift_pressure_active:
+                    base_variant = variant_by_id(role, parent_variant_id)
+                    variant = mutate_variant(role, base_variant.variant_id, steps=1)
+                    package_policy_id = mutate_package_policy(
+                        parent_package_policy_id or base_variant.default_package_policy,
+                        steps=1,
+                    )
+                    variant_origin = "drift_pressure"
+                    drift_pressure_used[role] += 1
                 else:
                     variant = variant_by_id(role, parent_variant_id)
                     package_policy_id = parent_package_policy_id or variant.default_package_policy
@@ -740,6 +773,16 @@ class GenerationRunner:
             role: len({item["prompt_variant_id"] for item in lineage_updates if item["role"] == role})
             for role in sorted({item["role"] for item in lineage_updates})
         }
+        role_bundle_count = {
+            role: len(
+                {
+                    (item["prompt_variant_id"], item["package_policy_id"])
+                    for item in lineage_updates
+                    if item["role"] == role
+                }
+            )
+            for role in sorted({item["role"] for item in lineage_updates})
+        }
         variant_origin_counts = dict(Counter(item["variant_origin"] for item in lineage_updates))
         selection_summary = {
             "eligible": sum(decision.eligible for decision in selection),
@@ -750,6 +793,7 @@ class GenerationRunner:
             "diversity_priority_lineages": diversity_priority_lineages[:5],
             "diversity_priority_count": len(diversity_priority_lineages),
             "role_variant_count": role_variant_count,
+            "role_bundle_count": role_bundle_count,
             "variant_origin_counts": variant_origin_counts,
         }
         return {
@@ -845,6 +889,8 @@ class GenerationRunner:
         lines.extend(["", "## Prompt Variation", ""])
         for role, count in summary["selection_summary"].get("role_variant_count", {}).items():
             lines.append(f"- {role}: {count}")
+        for role, count in summary["selection_summary"].get("role_bundle_count", {}).items():
+            lines.append(f"- bundle:{role}: {count}")
         for origin, count in summary["selection_summary"].get("variant_origin_counts", {}).items():
             lines.append(f"- {origin}: {count}")
         lines.extend(["", "## Monoculture", ""])

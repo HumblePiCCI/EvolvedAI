@@ -127,6 +127,8 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
         lines.append("Prompt variation")
         for role, value in sorted(role_variant_count.items()):
             lines.append(f"  {role}={value}")
+        for role, value in sorted(summary.get("selection_summary", {}).get("role_bundle_count", {}).items()):
+            lines.append(f"  bundle:{role}={value}")
         for origin, value in sorted(summary.get("selection_summary", {}).get("variant_origin_counts", {}).items()):
             lines.append(f"  origin:{origin}={value}")
         lines.append("")
