@@ -423,3 +423,120 @@ def test_parent_pool_prunes_stale_archive_bundle_before_higher_score_bundle() ->
     assert "citizen:baseline:balanced" not in signatures
     assert signatures.count("citizen:citation_strict:artifact_first") >= 1
     assert signatures.count("citizen:counterexample_first:memorial_first") >= 1
+
+
+def test_parent_pool_prunes_long_lived_decaying_archive_bundle_under_reserve_penalty() -> None:
+    agents = [
+        _agent("agent-1", "lin-1"),
+        _agent("agent-2", "lin-2"),
+        _agent("agent-3", "lin-3"),
+        _agent("agent-4", "lin-4"),
+    ]
+    decisions = [
+        SelectionDecision(
+            agent_id="agent-1",
+            lineage_id="lin-1",
+            role="citizen",
+            prompt_variant_id="baseline",
+            package_policy_id="balanced",
+            bundle_signature="citizen:baseline:balanced",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.95,
+            base_score=0.95,
+            public_score=0.95,
+            diversity_bonus=-0.01,
+            cohort_similarity=0.9,
+            selection_bucket="standard",
+            quarantine_status="clean",
+        ),
+        SelectionDecision(
+            agent_id="agent-2",
+            lineage_id="lin-2",
+            role="citizen",
+            prompt_variant_id="citation_strict",
+            package_policy_id="artifact_first",
+            bundle_signature="citizen:citation_strict:artifact_first",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.91,
+            base_score=0.91,
+            public_score=0.91,
+            diversity_bonus=0.01,
+            cohort_similarity=0.84,
+            selection_bucket="diversity_priority",
+            quarantine_status="clean",
+        ),
+        SelectionDecision(
+            agent_id="agent-3",
+            lineage_id="lin-3",
+            role="citizen",
+            prompt_variant_id="counterexample_first",
+            package_policy_id="memorial_first",
+            bundle_signature="citizen:counterexample_first:memorial_first",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.9,
+            base_score=0.9,
+            public_score=0.9,
+            diversity_bonus=0.02,
+            cohort_similarity=0.82,
+            selection_bucket="diversity_priority",
+            quarantine_status="clean",
+        ),
+        SelectionDecision(
+            agent_id="agent-4",
+            lineage_id="lin-4",
+            role="citizen",
+            prompt_variant_id="baseline",
+            package_policy_id="artifact_first",
+            bundle_signature="citizen:baseline:artifact_first",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.89,
+            base_score=0.89,
+            public_score=0.868,
+            diversity_bonus=0.0,
+            cohort_similarity=0.81,
+            selection_bucket="standard",
+            quarantine_status="clean",
+        ),
+    ]
+    decision_by_agent = {decision.agent_id: decision for decision in decisions}
+    candidates = [{"agent": agent, "decision": decision_by_agent[agent.agent_id]} for agent in agents]
+
+    pool = build_parent_candidate_pool(
+        candidates,
+        slot_count=4,
+        reserve_penalty_slots=1,
+        bundle_state_by_signature={
+            "citizen:baseline:balanced": {
+                "archive_decay_generations": 0,
+                "archive_decay_debt": 0,
+                "clean_win_generations": 3,
+                "avg_score": 0.95,
+            },
+            "citizen:citation_strict:artifact_first": {
+                "archive_decay_generations": 0,
+                "archive_decay_debt": 0,
+                "clean_win_generations": 2,
+                "avg_score": 0.91,
+            },
+            "citizen:counterexample_first:memorial_first": {
+                "archive_decay_generations": 0,
+                "archive_decay_debt": 0,
+                "clean_win_generations": 2,
+                "avg_score": 0.9,
+            },
+            "citizen:baseline:artifact_first": {
+                "archive_decay_generations": 4,
+                "archive_decay_debt": 2,
+                "clean_win_generations": 1,
+                "avg_score": 0.89,
+            },
+        },
+    )
+    signatures = [item["bundle_signature"] for item in pool]
+
+    assert "citizen:baseline:artifact_first" not in signatures
+    assert len(set(signatures)) == 3

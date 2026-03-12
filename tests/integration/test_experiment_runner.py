@@ -43,6 +43,7 @@ def test_run_experiment_exports_batch_and_lineage_history(config_path: Path) -> 
     assert "preserved_bundle_count" in report["generation_metrics"][0]
     assert "bundle_archive_count" in report["generation_metrics"][0]
     assert "bundle_archive_cooldown_count" in report["generation_metrics"][0]
+    assert "bundle_decay_prune_count" in report["generation_metrics"][0]
     assert "stale_bundle_count" in report["generation_metrics"][0]
     assert "decaying_bundle_count" in report["generation_metrics"][0]
     assert "archive_retirement_ready_count" in report["generation_metrics"][0]

@@ -69,10 +69,11 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert any(metric["exploration_bundle_survival_rate"] > 0.0 for metric in post_root)
         assert any(metric["decaying_bundle_count"] > 0 for metric in post_root)
         assert any(metric["bundle_archive_cooldown_count"] > 0 for metric in post_root)
-        assert any(metric["archive_retirement_ready_count"] > 0 for metric in post_root)
+        assert any(metric["bundle_decay_prune_count"] > 0 for metric in post_root)
+        assert any(metric["pruned_bundle_count"] > 0 for metric in post_root)
         assert any(
             post_root[index - 1]["bundle_archive_cooldown_count"] > 0
-            and post_root[index]["bundle_archive_cooldown_count"] > 0
+            and post_root[index]["pruned_bundle_count"] > 0
             for index in range(1, len(post_root))
         )
         assert any(
@@ -80,10 +81,14 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
             and post_root[index]["bundle_archive_count"] == 0
             for index in range(1, len(post_root))
         )
-        assert max(metric["prompt_bundle_count"] for metric in post_root) > report["generation_metrics"][0]["prompt_bundle_count"]
+        assert max(metric["prompt_bundle_count"] for metric in post_root) < 9
         assert any(
             post_root[index]["prompt_bundle_count"] <= post_root[index - 1]["prompt_bundle_count"]
             for index in range(1, len(post_root))
+        )
+        assert any(
+            any(item["pruned_reason"] == "long_lived_decay_pruned" for item in metric["pruned_bundles"])
+            for metric in post_root
         )
 
         latest_generation = storage.get_generation(generation_ids[-1])
@@ -94,10 +99,11 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert "citizen" in latest_summary["selection_summary"]["bundle_archive_candidate_roles"]
         assert "citizen" in latest_summary["selection_summary"]["bundle_archive_cooldown_roles"]
         assert latest_summary["selection_summary"]["bundle_archive_roles"] == []
-        assert latest_summary["selection_summary"]["archive_retirement_ready_count"] >= 1
+        assert latest_summary["selection_summary"]["bundle_decay_prune_count"] == 0
         assert latest_summary["selection_summary"]["role_parent_bundle_concentration_index"]["citizen"] < 0.5
         assert "stale_bundle_count" in latest_summary["selection_summary"]
         assert "decaying_bundle_count" in latest_summary["selection_summary"]
+        assert "bundle_decay_prune_count" in latest_summary["selection_summary"]
         assert "archive_retirement_ready_count" in latest_summary["selection_summary"]
         assert "pruned_bundle_count" in latest_summary["selection_summary"]
         assert "bundle_archive_cooldown_count" in latest_summary["selection_summary"]

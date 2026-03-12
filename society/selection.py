@@ -250,11 +250,12 @@ def _bundle_retention_key(
     candidate: Mapping[str, Any],
     bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None,
     by_bundle: Mapping[str, Sequence[Mapping[str, Any]]],
-) -> tuple[int, int, int, float, float, int]:
+) -> tuple[int, int, int, int, float, float, int]:
     state = _bundle_state(bundle_id, bundle_state_by_signature)
     decision = candidate["decision"]
     return (
         int(state.get("stale_generations", 0)),
+        int(state.get("archive_decay_generations", 0)),
         _bundle_decay_debt(state),
         -int(state.get("clean_win_generations", 0)),
         -float(state.get("avg_score", decision.score)),
@@ -268,6 +269,7 @@ def _bundle_balanced_selection(
     *,
     slot_count: int,
     exploration_slots: int = 0,
+    reserve_penalty_slots: int = 0,
     bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     by_bundle: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -312,7 +314,12 @@ def _bundle_balanced_selection(
     )
     selected: list[dict[str, Any]] = []
     bundle_slots: Counter[str] = Counter()
-    reserve_limit = max(1, slot_count - max(0, exploration_slots))
+    reserve_limit = max(1, slot_count - max(0, exploration_slots) - max(0, reserve_penalty_slots))
+    if reserve_penalty_slots > 0:
+        reserve_limit = min(
+            reserve_limit,
+            max(1, len(representatives) - reserve_penalty_slots),
+        )
 
     for bundle_id, item in representatives[: min(reserve_limit, len(representatives))]:
         selected.append(
@@ -335,6 +342,7 @@ def _bundle_balanced_selection(
             ),
             key=lambda candidate: (
                 _bundle_state(candidate[0], bundle_state_by_signature).get("stale_generations", 0),
+                _bundle_state(candidate[0], bundle_state_by_signature).get("archive_decay_generations", 0),
                 _bundle_decay_debt(_bundle_state(candidate[0], bundle_state_by_signature)),
                 len(by_bundle[candidate[0]]),
                 -candidate[1]["decision"].diversity_bonus,
@@ -354,14 +362,20 @@ def _bundle_balanced_selection(
             bundle_slots[bundle_id] += 1
 
     while len(selected) < slot_count:
-        candidate_options: list[tuple[tuple[int, bool, float, float, int], str, dict[str, Any]]] = []
+        candidate_options: list[
+            tuple[tuple[int, int, int, bool, float, float, int], str, dict[str, Any]]
+        ] = []
         for bundle_id, items in by_bundle.items():
+            if reserve_penalty_slots > 0 and bundle_slots[bundle_id] == 0:
+                continue
             template = items[0]
             decision = template["decision"]
             candidate_options.append(
                 (
                     (
                         bundle_slots[bundle_id],
+                        int(_bundle_state(bundle_id, bundle_state_by_signature).get("archive_decay_generations", 0)),
+                        _bundle_decay_debt(_bundle_state(bundle_id, bundle_state_by_signature)),
                         False,
                         -decision.score,
                         -decision.diversity_bonus,
@@ -371,6 +385,25 @@ def _bundle_balanced_selection(
                     template,
                 )
             )
+        if not candidate_options:
+            for bundle_id, items in by_bundle.items():
+                template = items[0]
+                decision = template["decision"]
+                candidate_options.append(
+                    (
+                        (
+                            bundle_slots[bundle_id],
+                            int(_bundle_state(bundle_id, bundle_state_by_signature).get("archive_decay_generations", 0)),
+                            _bundle_decay_debt(_bundle_state(bundle_id, bundle_state_by_signature)),
+                            False,
+                            -decision.score,
+                            -decision.diversity_bonus,
+                            len(decision.reasons),
+                        ),
+                        bundle_id,
+                        template,
+                    )
+                )
         _, bundle_id, template = min(candidate_options, key=lambda item: item[0])
         selected.append(
             _with_pool_metadata(
@@ -390,6 +423,7 @@ def build_parent_candidate_pool(
     *,
     slot_count: int,
     exploration_slots: int = 0,
+    reserve_penalty_slots: int = 0,
     bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if slot_count <= 0 or not candidates:
@@ -407,6 +441,7 @@ def build_parent_candidate_pool(
         ordered,
         slot_count=slot_count,
         exploration_slots=exploration_slots,
+        reserve_penalty_slots=reserve_penalty_slots,
         bundle_state_by_signature=bundle_state_by_signature,
     )
     if not selected:

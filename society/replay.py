@@ -149,8 +149,13 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             lines.append(f"  archive_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_cooldown_roles", []):
             lines.append(f"  archive_cooldown_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_decay_prune_roles", []):
+            lines.append(f"  archive_decay_prune_role:{role}")
         lines.append(
             f"  archive_cooldown_count:{summary.get('selection_summary', {}).get('bundle_archive_cooldown_count', 0)}"
+        )
+        lines.append(
+            f"  archive_decay_prune_count:{summary.get('selection_summary', {}).get('bundle_decay_prune_count', 0)}"
         )
         lines.append(
             f"  stale_bundle_count:{summary.get('selection_summary', {}).get('stale_bundle_count', 0)}"
@@ -180,6 +185,7 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f" stale={item['stale_generations']}"
                 f" retention_debt={item['retention_debt']}"
                 f" archive_decay_debt={item['archive_decay_debt']}"
+                f" archive_decay_generations={item.get('archive_decay_generations', 0)}"
                 f" useful_streak={item.get('archive_useful_clean_streak', 0)}"
                 f" retirement_credit={item.get('archive_retirement_credit', 0)}"
                 f" avg_public_score={item.get('avg_public_score', 0.0)}"
@@ -200,6 +206,7 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f" stale={item['stale_generations']}"
                 f" retention_debt={item.get('retention_debt', 0)}"
                 f" archive_decay_debt={item.get('archive_decay_debt', 0)}"
+                f" archive_decay_generations={item.get('archive_decay_generations', 0)}"
                 f" useful_streak={item.get('archive_useful_clean_streak', 0)}"
                 f" retirement_credit={item.get('archive_retirement_credit', 0)}"
                 f" avg_public_score={item.get('avg_public_score', 0.0)}"
