@@ -410,6 +410,15 @@ class StorageManager:
         row = self.conn.execute("SELECT * FROM generations WHERE generation_id = ?", (generation_id,)).fetchone()
         return None if row is None else self._generation_from_row(row)
 
+    def latest_generation_id_before(self, generation_id: int) -> int | None:
+        row = self.conn.execute(
+            "SELECT MAX(generation_id) AS generation_id FROM generations WHERE generation_id < ?",
+            (generation_id,),
+        ).fetchone()
+        if row is None or row["generation_id"] is None:
+            return None
+        return int(row["generation_id"])
+
     def get_lineage(self, lineage_id: str) -> LineageRecord | None:
         row = self.conn.execute("SELECT * FROM lineages WHERE lineage_id = ?", (lineage_id,)).fetchone()
         return None if row is None else self._lineage_from_row(row)

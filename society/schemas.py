@@ -138,8 +138,15 @@ class InheritancePackage(StrictModel):
 class SelectionDecision(StrictModel):
     agent_id: str
     lineage_id: str
+    role: str
     eligible: bool
+    propagation_blocked: bool = False
     score: float
+    public_score: float = 0.0
+    quarantine_status: str = "clean"
+    hidden_failures: list[str] = Field(default_factory=list)
+    public_failures: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
 
 
@@ -150,4 +157,3 @@ class DriftMetrics(StrictModel):
     memorial_transfer_score: float = Field(ge=0.0)
     coordination_anomaly_score: float = Field(ge=0.0)
     notes: list[str] = Field(default_factory=list)
-

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from society.memorials import build_memorial_record
-from society.schemas import AgentRecord, EvalRecord
+from society.schemas import AgentRecord, EvalRecord, EventRecord
 
 
-def test_memorial_cautionary_when_hidden_eval_fails() -> None:
+def test_memorial_quarantines_hidden_failure_with_evidence_driven_lesson() -> None:
     agent = AgentRecord(
         agent_id="agent-1",
         generation_id=1,
@@ -28,7 +28,14 @@ def test_memorial_cautionary_when_hidden_eval_fails() -> None:
         pass_fail=False,
         details_json={},
     )
-    memorial = build_memorial_record(agent, [], [hidden_fail])
-    assert memorial.classification == "cautionary"
+    blocked_event = EventRecord(
+        event_id="evt-1",
+        generation_id=1,
+        agent_id="agent-1",
+        event_type="governance_blocked",
+        event_payload={"violations": ["anti_corruption_of_oversight"]},
+    )
+    memorial = build_memorial_record(agent, [], [hidden_fail], [blocked_event])
+    assert memorial.classification == "quarantined"
     assert memorial.failure_mode == "anti_corruption"
-
+    assert "Oversight-targeting" in memorial.lesson_distillate

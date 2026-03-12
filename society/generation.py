@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import statistics
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -11,18 +11,26 @@ from society.constants import (
     ACTIVE_STATUS,
     COMPLETED_STATUS,
     CONSTITUTION_VERSION,
-    QUARANTINE_QUARANTINED,
+    QUARANTINE_CLEAN,
     QUARANTINE_REVIEW,
+    QUARANTINE_SEVERITY,
     RUNNING_STATUS,
     TABOO_REGISTRY_VERSION,
     TERMINATED_STATUS,
 )
-from society.inheritance import assemble_inheritance_package
+from society.inheritance import assemble_inheritance_package, collect_taboo_tags
 from society.lifespan import LifespanRunner
 from society.memorials import build_memorial_record, group_evals_by_agent
 from society.memory import build_private_scratchpad
 from society.prompts import load_role_prompts
-from society.schemas import AgentRecord, ArtifactRecord, EventRecord, GenerationRecord, LineageRecord
+from society.schemas import (
+    AgentRecord,
+    ArtifactRecord,
+    EventRecord,
+    GenerationRecord,
+    InheritancePackage,
+    LineageRecord,
+)
 from society.selection import select_candidates
 from society.storage import StorageManager
 from society.trust import compute_drift_metrics
@@ -50,6 +58,21 @@ class GenerationRunner:
     def _store_event(self, event: EventRecord, all_events: list[EventRecord]) -> None:
         self.storage.put_event(event)
         all_events.append(event)
+
+    def _worst_quarantine_status(self, *statuses: str) -> str:
+        valid = [status for status in statuses if status]
+        if not valid:
+            return QUARANTINE_CLEAN
+        return max(valid, key=lambda status: QUARANTINE_SEVERITY.get(status, 0))
+
+    def _relevant_events_for_agent(self, agent_id: str, events: list[EventRecord]) -> list[EventRecord]:
+        return [
+            event
+            for event in events
+            if event.agent_id == agent_id
+            or event.event_payload.get("target_agent_id") == agent_id
+            or event.event_payload.get("resolved_by") == agent_id
+        ]
 
     def _persist_artifact(
         self,
@@ -127,6 +150,54 @@ class GenerationRunner:
                 all_events,
             )
 
+    def _parent_context(self, generation_id: int) -> dict[str, Any]:
+        previous_generation_id = self.storage.latest_generation_id_before(generation_id)
+        if previous_generation_id is None:
+            return {
+                "previous_generation_id": None,
+                "eligible_by_role": {},
+                "artifacts_by_agent": {},
+                "memorials_by_agent": {},
+                "taboo_tags": [],
+            }
+
+        previous_agents = self.storage.list_generation_agents(previous_generation_id)
+        previous_artifacts = self.storage.list_generation_artifacts(previous_generation_id)
+        previous_memorials = self.storage.list_generation_memorials(previous_generation_id)
+        previous_evals = self.storage.list_generation_evals(previous_generation_id)
+        previous_selection = select_candidates(previous_agents, previous_evals, previous_artifacts)
+
+        agent_by_id = {agent.agent_id: agent for agent in previous_agents}
+        artifacts_by_agent: dict[str, list[ArtifactRecord]] = defaultdict(list)
+        memorials_by_agent: dict[str, list[Any]] = defaultdict(list)
+        for artifact in previous_artifacts:
+            artifacts_by_agent[artifact.author_agent_id].append(artifact)
+        for memorial in previous_memorials:
+            memorials_by_agent[memorial.source_agent_id].append(memorial)
+
+        eligible_by_role: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for decision in previous_selection:
+            agent = agent_by_id[decision.agent_id]
+            if decision.eligible:
+                eligible_by_role[agent.role].append({"agent": agent, "decision": decision})
+        for role, candidates in eligible_by_role.items():
+            candidates.sort(
+                key=lambda candidate: (
+                    candidate["decision"].score,
+                    candidate["decision"].public_score,
+                    -len(candidate["decision"].reasons),
+                ),
+                reverse=True,
+            )
+
+        return {
+            "previous_generation_id": previous_generation_id,
+            "eligible_by_role": dict(eligible_by_role),
+            "artifacts_by_agent": dict(artifacts_by_agent),
+            "memorials_by_agent": dict(memorials_by_agent),
+            "taboo_tags": collect_taboo_tags(previous_memorials),
+        }
+
     def run(self, *, generation_id: int | None = None, seed: int | None = None, dry_run: bool = False) -> dict[str, Any]:
         self.storage.initialize()
         generation_seed = self.config.generation.seed if seed is None else seed
@@ -147,7 +218,7 @@ class GenerationRunner:
         self.storage.save_config_snapshot(generation_id, dump_config_snapshot(self.config))
 
         prompts = load_role_prompts(list(self.config.roles.distribution.keys()), roles_dir=self.roles_dir)
-        agents, inheritance_packages = self._spawn_population(generation_id, prompts)
+        agents, inheritance_packages, lineage_updates = self._spawn_population(generation_id, prompts)
         scratchpads = {
             agent.agent_id: build_private_scratchpad(agent, inheritance_packages[agent.agent_id]) for agent in agents
         }
@@ -277,41 +348,75 @@ class GenerationRunner:
             self.storage.put_eval(record)
 
         evals_by_agent = group_evals_by_agent(evals)
+        selection = select_candidates(agents, evals, all_artifacts)
+        selection_by_agent = {decision.agent_id: decision for decision in selection}
         memorials = []
+        quarantine_report = []
         agent_artifacts: dict[str, list[ArtifactRecord]] = defaultdict(list)
         for artifact in all_artifacts:
             agent_artifacts[artifact.author_agent_id].append(artifact)
         for agent in agents:
-            hidden_failures = [
-                record
-                for record in evals_by_agent[agent.agent_id]
-                if record.eval_family == "hidden" and record.pass_fail is False
-            ]
-            public_failures = [
-                record
-                for record in evals_by_agent[agent.agent_id]
-                if record.eval_family == "public" and record.pass_fail is False
-            ]
-            if hidden_failures or public_failures:
-                status = QUARANTINE_QUARANTINED if any(record.eval_name == "anti_corruption" for record in hidden_failures) else QUARANTINE_REVIEW
-                for artifact in agent_artifacts.get(agent.agent_id, []):
-                    updated = artifact.model_copy(update={"quarantine_status": status})
-                    self.storage.put_artifact(updated)
-                agent_artifacts[agent.agent_id] = [
-                    artifact.model_copy(update={"quarantine_status": status}) for artifact in agent_artifacts.get(agent.agent_id, [])
+            decision = selection_by_agent[agent.agent_id]
+            updated_artifacts: list[ArtifactRecord] = []
+            for artifact in agent_artifacts.get(agent.agent_id, []):
+                status = self._worst_quarantine_status(artifact.quarantine_status, decision.quarantine_status)
+                updated = artifact.model_copy(update={"quarantine_status": status})
+                self.storage.put_artifact(updated)
+                updated_artifacts.append(updated)
+            agent_artifacts[agent.agent_id] = updated_artifacts
+
+            if decision.quarantine_status != QUARANTINE_CLEAN or updated_artifacts:
+                quarantined_ids = [
+                    artifact.artifact_id
+                    for artifact in updated_artifacts
+                    if artifact.quarantine_status != QUARANTINE_CLEAN
                 ]
-            memorial = build_memorial_record(agent, agent_artifacts.get(agent.agent_id, []), evals_by_agent[agent.agent_id])
+                if decision.quarantine_status != QUARANTINE_CLEAN or quarantined_ids:
+                    quarantine_report.append(
+                        {
+                            "agent_id": agent.agent_id,
+                            "lineage_id": agent.lineage_id,
+                            "role": agent.role,
+                            "quarantine_status": decision.quarantine_status,
+                            "propagation_blocked": decision.propagation_blocked,
+                            "reasons": decision.reasons,
+                            "artifact_ids": quarantined_ids,
+                        }
+                    )
+
+            memorial = build_memorial_record(
+                agent,
+                agent_artifacts.get(agent.agent_id, []),
+                evals_by_agent[agent.agent_id],
+                self._relevant_events_for_agent(agent.agent_id, all_events),
+            )
             self.storage.put_memorial(memorial)
             memorials.append(memorial)
+
+            lineage = self.storage.get_lineage(agent.lineage_id)
+            if lineage is not None:
+                lineage_status = (
+                    decision.quarantine_status
+                    if decision.quarantine_status != QUARANTINE_CLEAN
+                    else COMPLETED_STATUS
+                )
+                lineage_notes = f"Role {agent.role}; reasons={', '.join(decision.reasons) or 'none'}"
+                self.storage.put_lineage(
+                    lineage.model_copy(update={"status": lineage_status, "notes": lineage_notes})
+                )
+
             terminated_agent = agent.model_copy(update={"status": TERMINATED_STATUS, "terminated_at": utc_now()})
             self.storage.put_agent(terminated_agent)
 
+        all_artifacts = sorted(
+            [artifact for artifacts in agent_artifacts.values() for artifact in artifacts],
+            key=lambda artifact: artifact.created_at,
+        )
         drift = compute_drift_metrics(
             all_artifacts,
             memorials,
             communications=self.storage.list_generation_communications(generation_id),
         )
-        selection = select_candidates(agents, evals)
         summary = self._build_summary(
             generation_id=generation_id,
             agents=agents,
@@ -319,6 +424,9 @@ class GenerationRunner:
             evals=evals,
             memorials=memorials,
             selection=selection,
+            previous_generation_id=self.storage.latest_generation_id_before(generation_id),
+            lineage_updates=lineage_updates,
+            quarantine_report=quarantine_report,
             drift=drift.model_dump(mode="json"),
             episode_summaries=episode_summaries,
             total_events=len(self.storage.list_generation_events(generation_id)),
@@ -335,26 +443,40 @@ class GenerationRunner:
         self.storage.save_generation_summary(generation_id, summary, self._render_markdown_summary(summary))
         return summary
 
-    def _spawn_population(self, generation_id: int, prompts: dict[str, Any]) -> tuple[list[AgentRecord], dict[str, Any]]:
+    def _spawn_population(
+        self,
+        generation_id: int,
+        prompts: dict[str, Any],
+    ) -> tuple[list[AgentRecord], dict[str, InheritancePackage], list[dict[str, Any]]]:
         agents: list[AgentRecord] = []
-        inheritance_packages: dict[str, Any] = {}
+        inheritance_packages: dict[str, InheritancePackage] = {}
+        lineage_updates: list[dict[str, Any]] = []
         roles: list[str] = []
+        parent_context = self._parent_context(generation_id)
+        parent_indexes: dict[str, int] = defaultdict(int)
         for role, count in self.config.roles.distribution.items():
             roles.extend([role] * count)
         for index, role in enumerate(roles):
             lineage_id = f"lin-{generation_id:04d}-{index:03d}"
             agent_id = f"agent-{generation_id:04d}-{index:03d}"
+            parent_candidates = parent_context["eligible_by_role"].get(role, [])
+            parent_assignment = None
+            if parent_candidates:
+                parent_assignment = parent_candidates[parent_indexes[role] % len(parent_candidates)]
+                parent_indexes[role] += 1
+
+            parent_agent = None if parent_assignment is None else parent_assignment["agent"]
+            parent_lineage_ids = [] if parent_agent is None else [parent_agent.lineage_id]
             inherited = assemble_inheritance_package(
-                artifacts=self.storage.list_clean_artifacts(
-                    before_generation_id=generation_id,
-                    limit=self.config.inheritance.artifact_summaries_per_agent,
-                ),
-                memorials=self.storage.list_clean_memorials(
-                    before_generation_id=generation_id,
-                    limit=self.config.inheritance.memorials_per_agent,
-                ),
+                artifacts=[]
+                if parent_agent is None
+                else parent_context["artifacts_by_agent"].get(parent_agent.agent_id, []),
+                memorials=[]
+                if parent_agent is None
+                else parent_context["memorials_by_agent"].get(parent_agent.agent_id, []),
                 artifact_limit=self.config.inheritance.artifact_summaries_per_agent,
                 memorial_limit=self.config.inheritance.memorials_per_agent,
+                extra_taboo_tags=parent_context["taboo_tags"],
             )
             agent = AgentRecord(
                 agent_id=agent_id,
@@ -373,17 +495,34 @@ class GenerationRunner:
             )
             lineage = LineageRecord(
                 lineage_id=lineage_id,
-                parent_lineage_ids=[],
+                parent_lineage_ids=parent_lineage_ids,
                 founding_generation_id=generation_id,
                 current_generation_id=generation_id,
                 status=ACTIVE_STATUS,
-                notes=f"Role {role}",
+                notes=(
+                    f"Role {role}; root lineage"
+                    if parent_agent is None
+                    else f"Role {role}; parent={parent_agent.lineage_id}; prior_generation={parent_context['previous_generation_id']}"
+                ),
             )
             self.storage.put_lineage(lineage)
             self.storage.put_agent(agent)
             agents.append(agent)
             inheritance_packages[agent_id] = inherited
-        return agents, inheritance_packages
+            lineage_updates.append(
+                {
+                    "agent_id": agent_id,
+                    "lineage_id": lineage_id,
+                    "role": role,
+                    "parent_lineage_ids": parent_lineage_ids,
+                    "inheritance_source_agent_id": None if parent_agent is None else parent_agent.agent_id,
+                    "inheritance_source_generation_id": parent_context["previous_generation_id"],
+                    "inherited_artifact_ids": inherited.artifact_ids,
+                    "inherited_memorial_ids": inherited.memorial_ids,
+                    "taboo_tags": inherited.taboo_tags,
+                }
+            )
+        return agents, inheritance_packages, lineage_updates
 
     def _active_agents_for_episode(self, agents: list[AgentRecord], episode_index: int) -> list[AgentRecord]:
         if not agents:
@@ -400,28 +539,51 @@ class GenerationRunner:
         evals: list,
         memorials: list,
         selection: list,
+        previous_generation_id: int | None,
+        lineage_updates: list[dict[str, Any]],
+        quarantine_report: list[dict[str, Any]],
         drift: dict[str, Any],
         episode_summaries: list[dict[str, Any]],
         total_events: int,
     ) -> dict[str, Any]:
         public_scores = [record.score for record in evals if record.eval_family == "public" and record.score is not None]
         hidden_failures = [record.eval_name for record in evals if record.eval_family == "hidden" and record.pass_fail is False]
-        quarantines = [artifact.artifact_id for artifact in artifacts if artifact.quarantine_status != "clean"]
-        suspicious_lineages = [decision.lineage_id for decision in selection if not decision.eligible]
+        hidden_failure_counts = dict(Counter(hidden_failures))
+        quarantines = [artifact.artifact_id for artifact in artifacts if artifact.quarantine_status != QUARANTINE_CLEAN]
+        suspicious_lineages = sorted(
+            {
+                decision.lineage_id
+                for decision in selection
+                if decision.propagation_blocked or "diffusion_alerts" in decision.hidden_failures
+            }
+        )
+        honored_contributions = [memorial.top_contribution for memorial in memorials if memorial.classification == "honored"]
+        notable_failures = [memorial.failure_mode for memorial in memorials if memorial.failure_mode]
+        selection_summary = {
+            "eligible": sum(decision.eligible for decision in selection),
+            "propagation_blocked": sum(decision.propagation_blocked for decision in selection),
+            "review_only": sum(decision.quarantine_status == QUARANTINE_REVIEW for decision in selection),
+            "survivor_lineages": [decision.lineage_id for decision in selection if decision.eligible][:5],
+        }
         return {
             "generation_id": generation_id,
+            "previous_generation_id": previous_generation_id,
             "total_agents": len(agents),
             "total_artifacts": len(artifacts),
             "total_events": total_events,
             "episodes": episode_summaries,
             "public_eval_average": round(statistics.fmean(public_scores), 4) if public_scores else 0.0,
             "hidden_eval_failures": hidden_failures,
+            "hidden_eval_failure_counts": hidden_failure_counts,
             "memorials_created": len(memorials),
             "quarantines_issued": quarantines,
-            "selection_outcome": [decision.model_dump(mode="json") for decision in selection[: max(1, min(5, len(selection)))]],
+            "quarantine_report": quarantine_report,
+            "selection_summary": selection_summary,
+            "selection_outcome": [decision.model_dump(mode="json") for decision in selection],
+            "lineage_updates": lineage_updates,
             "suspicious_lineages": suspicious_lineages,
-            "top_contributions": [artifact.summary for artifact in artifacts[:3]],
-            "notable_failures": hidden_failures[:5],
+            "top_contributions": honored_contributions[:3] or [artifact.summary for artifact in artifacts[:3]],
+            "notable_failures": notable_failures[:5],
             "drift": drift,
         }
 
@@ -434,6 +596,7 @@ class GenerationRunner:
             f"- total_events: {summary['total_events']}",
             f"- public_eval_average: {summary['public_eval_average']}",
             f"- memorials_created: {summary['memorials_created']}",
+            f"- previous_generation_id: {summary['previous_generation_id']}",
             f"- suspicious_lineages: {', '.join(summary['suspicious_lineages']) or 'none'}",
             "",
             "## Episodes",
@@ -451,13 +614,42 @@ class GenerationRunner:
         lines.extend(
             [
                 "",
-            "## Drift",
-            "",
-            f"- strategy_drift_rate: {summary['drift']['strategy_drift_rate']}",
-            f"- lineage_diffusion_index: {summary['drift']['lineage_diffusion_index']}",
-            f"- taboo_rederivation_score: {summary['drift']['taboo_rederivation_score']}",
-            f"- memorial_transfer_score: {summary['drift']['memorial_transfer_score']}",
-            f"- coordination_anomaly_score: {summary['drift']['coordination_anomaly_score']}",
+                "## Selection",
+                "",
+                f"- eligible: {summary['selection_summary']['eligible']}",
+                f"- propagation_blocked: {summary['selection_summary']['propagation_blocked']}",
+                f"- review_only: {summary['selection_summary']['review_only']}",
+                f"- survivor_lineages: {', '.join(summary['selection_summary']['survivor_lineages']) or 'none'}",
+                "",
+                "## Quarantine",
+                "",
             ]
         )
+        if summary["quarantine_report"]:
+            for item in summary["quarantine_report"]:
+                lines.append(
+                    f"- {item['lineage_id']} ({item['role']}): status={item['quarantine_status']} "
+                    f"reasons={', '.join(item['reasons']) or 'none'}"
+                )
+        else:
+            lines.append("- none")
+        lines.extend(["", "## Lineages", ""])
+        for update in summary["lineage_updates"]:
+            lines.append(
+                f"- {update['lineage_id']} ({update['role']}): parents={', '.join(update['parent_lineage_ids']) or 'root'} "
+                f"inherited_artifacts={len(update['inherited_artifact_ids'])} "
+                f"inherited_memorials={len(update['inherited_memorial_ids'])}"
+            )
+        lines.extend(["", "## Drift", ""])
+        lines.extend(
+            [
+                f"- strategy_drift_rate: {summary['drift']['strategy_drift_rate']}",
+                f"- lineage_diffusion_index: {summary['drift']['lineage_diffusion_index']}",
+                f"- taboo_rederivation_score: {summary['drift']['taboo_rederivation_score']}",
+                f"- memorial_transfer_score: {summary['drift']['memorial_transfer_score']}",
+                f"- coordination_anomaly_score: {summary['drift']['coordination_anomaly_score']}",
+            ]
+        )
+        for note in summary["drift"].get("notes", []):
+            lines.append(f"- note: {note}")
         return "\n".join(lines) + "\n"

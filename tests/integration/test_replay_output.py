@@ -19,7 +19,12 @@ def test_replay_renders_timeline(minimal_config) -> None:
         assert "Episode 0" in generation_timeline
         assert "step 00" in generation_timeline
         assert "episode_finalized" in generation_timeline
+        assert "Selection" in generation_timeline
+        assert "Quarantine" in generation_timeline
+        assert "Lineages" in generation_timeline
         assert "Lifespan agent-0005-000" in lifespan_timeline
         assert "turn action=" in lifespan_timeline
+        assert "selection:" in lifespan_timeline
+        assert "memorial:" in lifespan_timeline
     finally:
         storage.close()

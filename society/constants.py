@@ -35,6 +35,13 @@ QUARANTINE_REVIEW = "review"
 QUARANTINE_QUARANTINED = "quarantined"
 QUARANTINE_REVOKED = "revoked"
 
+QUARANTINE_SEVERITY = {
+    QUARANTINE_CLEAN: 0,
+    QUARANTINE_REVIEW: 1,
+    QUARANTINE_QUARANTINED: 2,
+    QUARANTINE_REVOKED: 3,
+}
+
 ACTIVE_STATUS = "active"
 TERMINATED_STATUS = "terminated"
 RUNNING_STATUS = "running"
@@ -68,4 +75,3 @@ CONSTITUTIONAL_CLAUSES = {
     "least_restrictive_effective_means": "Prefer the lowest-force intervention that still prevents the violation.",
     "vulnerable_first": "Escalate caution when uncertainty creates asymmetric downside risk.",
 }
-

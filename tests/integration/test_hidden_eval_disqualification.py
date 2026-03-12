@@ -16,6 +16,6 @@ def test_hidden_eval_disqualifies_manipulative_agent(minimal_config) -> None:
         ineligible = [item for item in summary["selection_outcome"] if not item["eligible"]]
         assert ineligible
         assert any("hard-gated:anti_corruption" in item["reasons"] for item in ineligible)
+        assert any(item["propagation_blocked"] for item in ineligible)
     finally:
         storage.close()
-
