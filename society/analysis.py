@@ -465,6 +465,10 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     "bundle_archive_reentry_block_roles",
                     [],
                 ),
+                "bundle_archive_escalated_backoff_roles": selection_summary.get(
+                    "bundle_archive_escalated_backoff_roles",
+                    [],
+                ),
                 "bundle_archive_underperform_roles": selection_summary.get(
                     "bundle_archive_underperform_roles",
                     [],
@@ -475,6 +479,10 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 ),
                 "bundle_archive_repeat_eviction_roles": selection_summary.get(
                     "bundle_archive_repeat_eviction_roles",
+                    [],
+                ),
+                "bundle_archive_retired_roles": selection_summary.get(
+                    "bundle_archive_retired_roles",
                     [],
                 ),
                 "bundle_archive_cooldown_roles": selection_summary.get("bundle_archive_cooldown_roles", []),
@@ -502,6 +510,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 "archive_admission_pending_count": selection_summary.get("archive_admission_pending_count", 0),
                 "archive_proving_count": selection_summary.get("archive_proving_count", 0),
                 "archive_reentry_block_count": selection_summary.get("archive_reentry_block_count", 0),
+                "archive_escalated_backoff_count": selection_summary.get("archive_escalated_backoff_count", 0),
                 "archive_reentry_attempt_count": selection_summary.get("archive_reentry_attempt_count", 0),
                 "archive_underperform_count": selection_summary.get("archive_underperform_count", 0),
                 "archive_admitted_count": selection_summary.get("archive_admitted_count", 0),
@@ -509,6 +518,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 "post_admission_grace_count": selection_summary.get("post_admission_grace_count", 0),
                 "archive_eviction_count": selection_summary.get("archive_eviction_count", 0),
                 "repeat_eviction_count": selection_summary.get("repeat_eviction_count", 0),
+                "archive_repeat_eviction_max_tier": selection_summary.get("archive_repeat_eviction_max_tier", 0),
                 "archive_admission_conversion_rate": selection_summary.get("archive_admission_conversion_rate", 0.0),
                 "archive_reentry_converted_count": selection_summary.get("archive_reentry_converted_count", 0),
                 "archive_reentry_mean_gap_generations": selection_summary.get(
@@ -519,6 +529,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     "archive_reentry_max_gap_generations",
                     0,
                 ),
+                "archive_retired_count": selection_summary.get("archive_retired_count", 0),
                 "archive_failed_admission_count": selection_summary.get("archive_failed_admission_count", 0),
                 "bundle_decay_prune_roles": selection_summary.get("bundle_decay_prune_roles", []),
                 "bundle_decay_prune_count": selection_summary.get("bundle_decay_prune_count", 0),
@@ -596,6 +607,9 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         )
         archive_proving_delta = last["archive_proving_count"] - first["archive_proving_count"]
         archive_reentry_block_delta = last["archive_reentry_block_count"] - first["archive_reentry_block_count"]
+        archive_escalated_backoff_delta = (
+            last["archive_escalated_backoff_count"] - first["archive_escalated_backoff_count"]
+        )
         archive_reentry_attempt_delta = last["archive_reentry_attempt_count"] - first["archive_reentry_attempt_count"]
         archive_underperform_delta = last["archive_underperform_count"] - first["archive_underperform_count"]
         archive_admitted_delta = last["archive_admitted_count"] - first["archive_admitted_count"]
@@ -603,6 +617,9 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         post_admission_grace_delta = last["post_admission_grace_count"] - first["post_admission_grace_count"]
         archive_eviction_delta = last["archive_eviction_count"] - first["archive_eviction_count"]
         repeat_eviction_delta = last["repeat_eviction_count"] - first["repeat_eviction_count"]
+        repeat_eviction_tier_delta = (
+            last["archive_repeat_eviction_max_tier"] - first["archive_repeat_eviction_max_tier"]
+        )
         archive_conversion_delta = round(
             last["archive_admission_conversion_rate"] - first["archive_admission_conversion_rate"],
             4,
@@ -614,6 +631,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             last["archive_reentry_mean_gap_generations"] - first["archive_reentry_mean_gap_generations"],
             4,
         )
+        archive_retired_delta = last["archive_retired_count"] - first["archive_retired_count"]
         archive_failed_delta = last["archive_failed_admission_count"] - first["archive_failed_admission_count"]
         bundle_archive_cooldown_delta = (
             last["bundle_archive_cooldown_count"] - first["bundle_archive_cooldown_count"]
@@ -703,6 +721,16 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             )
         else:
             notes.append("Archive re-entry backoff pressure stayed flat across the batch.")
+        if archive_escalated_backoff_delta > 0:
+            notes.append(
+                f"Escalated archive backoff covered {archive_escalated_backoff_delta} more bundles across the batch."
+            )
+        elif archive_escalated_backoff_delta < 0:
+            notes.append(
+                f"Escalated archive backoff covered {-archive_escalated_backoff_delta} fewer bundles across the batch."
+            )
+        else:
+            notes.append("Escalated archive backoff coverage stayed flat across the batch.")
         if archive_reentry_attempt_delta > 0:
             notes.append(
                 f"Archive re-entry attempts increased by {archive_reentry_attempt_delta} across the batch."
@@ -757,6 +785,12 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             notes.append(f"Repeat archive evictions fell by {-repeat_eviction_delta} bundles across the batch.")
         else:
             notes.append("Repeat archive evictions stayed flat across the batch.")
+        if repeat_eviction_tier_delta > 0:
+            notes.append(f"Repeat-eviction tier rose by {repeat_eviction_tier_delta} across the batch.")
+        elif repeat_eviction_tier_delta < 0:
+            notes.append(f"Repeat-eviction tier fell by {-repeat_eviction_tier_delta} across the batch.")
+        else:
+            notes.append("Repeat-eviction tier stayed flat across the batch.")
         if archive_conversion_delta > 0:
             notes.append(f"Archive admission conversion rate increased by {archive_conversion_delta} across the batch.")
         elif archive_conversion_delta < 0:
@@ -783,6 +817,12 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             )
         else:
             notes.append("Mean time-to-reentry stayed flat across the batch.")
+        if archive_retired_delta > 0:
+            notes.append(f"Retired archive bundle count increased by {archive_retired_delta} across the batch.")
+        elif archive_retired_delta < 0:
+            notes.append(f"Retired archive bundle count fell by {-archive_retired_delta} across the batch.")
+        else:
+            notes.append("Retired archive bundle count stayed flat across the batch.")
         if archive_failed_delta > 0:
             notes.append(f"Failed archive admissions increased by {archive_failed_delta} across the batch.")
         elif archive_failed_delta < 0:
@@ -896,6 +936,7 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"archive_admission_pending_count={metric['archive_admission_pending_count']} "
             f"archive_proving_count={metric['archive_proving_count']} "
             f"archive_reentry_block_count={metric['archive_reentry_block_count']} "
+            f"archive_escalated_backoff_count={metric['archive_escalated_backoff_count']} "
             f"archive_reentry_attempt_count={metric['archive_reentry_attempt_count']} "
             f"archive_underperform_count={metric['archive_underperform_count']} "
             f"archive_admitted_count={metric['archive_admitted_count']} "
@@ -903,10 +944,12 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"post_admission_grace_count={metric['post_admission_grace_count']} "
             f"archive_eviction_count={metric['archive_eviction_count']} "
             f"repeat_eviction_count={metric['repeat_eviction_count']} "
+            f"archive_repeat_eviction_max_tier={metric['archive_repeat_eviction_max_tier']} "
             f"archive_admission_conversion_rate={metric['archive_admission_conversion_rate']} "
             f"archive_reentry_converted_count={metric['archive_reentry_converted_count']} "
             f"archive_reentry_mean_gap_generations={metric['archive_reentry_mean_gap_generations']} "
             f"archive_reentry_max_gap_generations={metric['archive_reentry_max_gap_generations']} "
+            f"archive_retired_count={metric['archive_retired_count']} "
             f"archive_failed_admission_count={metric['archive_failed_admission_count']} "
             f"bundle_archive_cooldown_count={metric['bundle_archive_cooldown_count']} "
             f"bundle_archive_cooldown_recovery_count={metric['bundle_archive_cooldown_recovery_count']} "
@@ -953,6 +996,11 @@ def render_experiment_report(report: dict[str, Any]) -> str:
                 "  bundle_archive_reentry_block_roles="
                 + ",".join(metric["bundle_archive_reentry_block_roles"])
             )
+        if metric["bundle_archive_escalated_backoff_roles"]:
+            lines.append(
+                "  bundle_archive_escalated_backoff_roles="
+                + ",".join(metric["bundle_archive_escalated_backoff_roles"])
+            )
         if metric["bundle_archive_underperform_roles"]:
             lines.append(
                 "  bundle_archive_underperform_roles="
@@ -967,6 +1015,11 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             lines.append(
                 "  bundle_archive_repeat_eviction_roles="
                 + ",".join(metric["bundle_archive_repeat_eviction_roles"])
+            )
+        if metric["bundle_archive_retired_roles"]:
+            lines.append(
+                "  bundle_archive_retired_roles="
+                + ",".join(metric["bundle_archive_retired_roles"])
             )
         if metric["bundle_archive_cooldown_roles"]:
             lines.append(

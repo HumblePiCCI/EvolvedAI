@@ -157,12 +157,16 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             lines.append(f"  archive_reentry_backoff_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_reentry_block_roles", []):
             lines.append(f"  archive_reentry_block_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_escalated_backoff_roles", []):
+            lines.append(f"  archive_escalated_backoff_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_underperform_roles", []):
             lines.append(f"  archive_underperform_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_eviction_roles", []):
             lines.append(f"  archive_eviction_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_repeat_eviction_roles", []):
             lines.append(f"  archive_repeat_eviction_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_retired_roles", []):
+            lines.append(f"  archive_retired_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_cooldown_roles", []):
             lines.append(f"  archive_cooldown_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_cooldown_fresh_admission_roles", []):
@@ -182,6 +186,9 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
         )
         lines.append(
             f"  archive_reentry_block_count:{summary.get('selection_summary', {}).get('archive_reentry_block_count', 0)}"
+        )
+        lines.append(
+            f"  archive_escalated_backoff_count:{summary.get('selection_summary', {}).get('archive_escalated_backoff_count', 0)}"
         )
         lines.append(
             f"  archive_reentry_attempt_count:{summary.get('selection_summary', {}).get('archive_reentry_attempt_count', 0)}"
@@ -206,6 +213,10 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             f"  repeat_eviction_count:{summary.get('selection_summary', {}).get('repeat_eviction_count', 0)}"
         )
         lines.append(
+            "  archive_repeat_eviction_max_tier:"
+            f"{summary.get('selection_summary', {}).get('archive_repeat_eviction_max_tier', 0)}"
+        )
+        lines.append(
             "  archive_admission_conversion_rate:"
             f"{summary.get('selection_summary', {}).get('archive_admission_conversion_rate', 0.0)}"
         )
@@ -219,6 +230,9 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
         lines.append(
             "  archive_reentry_max_gap_generations:"
             f"{summary.get('selection_summary', {}).get('archive_reentry_max_gap_generations', 0)}"
+        )
+        lines.append(
+            f"  archive_retired_count:{summary.get('selection_summary', {}).get('archive_retired_count', 0)}"
         )
         lines.append(
             "  archive_failed_admission_count:"
@@ -292,7 +306,18 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 "  reentry_blocked:"
                 f"{item['role']}:{item['bundle_signature']}"
                 f" backoff_remaining={item.get('archive_reentry_backoff_remaining', 0)}"
+                f" backoff_target={item.get('archive_reentry_backoff_target', 0)}"
+                f" required_proving_streak={item.get('archive_reentry_required_proving_streak', 0)}"
                 f" attempt_count={item.get('archive_reentry_attempt_count', 0)}"
+                f" tier={item.get('archive_repeat_eviction_tier', 0)}"
+                f" avg_public_score={item.get('avg_public_score', 0.0)}"
+            )
+        for item in summary.get("selection_summary", {}).get("escalated_backoff_bundles", []):
+            lines.append(
+                "  escalated_backoff:"
+                f"{item['role']}:{item['bundle_signature']}"
+                f" backoff_target={item.get('archive_reentry_backoff_target', 0)}"
+                f" tier={item.get('archive_repeat_eviction_tier', 0)}"
                 f" avg_public_score={item.get('avg_public_score', 0.0)}"
             )
         for item in summary.get("selection_summary", {}).get("archive_underperform_bundles", []):
@@ -312,7 +337,11 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f" streak={item.get('archive_underperform_streak', 0)}"
                 f" margin={item.get('archive_underperform_margin', 0.0)}"
                 f" benchmark={item.get('archive_survivor_public_benchmark', 0.0)}"
+                f" backoff_target={item.get('archive_reentry_backoff_target', 0)}"
+                f" required_proving_streak={item.get('archive_reentry_required_proving_streak', 0)}"
                 f" attempt_count={item.get('archive_reentry_attempt_count', 0)}"
+                f" tier={item.get('archive_repeat_eviction_tier', 0)}"
+                f" retired={str(item.get('archive_retired', False)).lower()}"
                 f" pending_generations={item.get('archive_admission_pending_generations', 0)}"
                 f" avg_public_score={item.get('avg_public_score', 0.0)}"
             )
@@ -321,7 +350,21 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 "  repeat_eviction:"
                 f"{item['role']}:{item['bundle_signature']}"
                 f" eviction_count={item.get('archive_eviction_count', 0)}"
+                f" tier={item.get('archive_repeat_eviction_tier', 0)}"
+                f" backoff_target={item.get('archive_reentry_backoff_target', 0)}"
                 f" attempt_count={item.get('archive_reentry_attempt_count', 0)}"
+                f" retired={str(item.get('archive_retired', False)).lower()}"
+                f" avg_public_score={item.get('avg_public_score', 0.0)}"
+            )
+        for item in summary.get("selection_summary", {}).get("archive_retired_bundles", []):
+            lines.append(
+                "  retired:"
+                f"{item['role']}:{item['bundle_signature']}"
+                f" eviction_count={item.get('archive_eviction_count', 0)}"
+                f" tier={item.get('archive_repeat_eviction_tier', 0)}"
+                f" backoff_target={item.get('archive_reentry_backoff_target', 0)}"
+                f" attempt_count={item.get('archive_reentry_attempt_count', 0)}"
+                f" retired_generation={item.get('archive_retired_generation_id')}"
                 f" avg_public_score={item.get('avg_public_score', 0.0)}"
             )
         for item in summary.get("selection_summary", {}).get("archive_admitted_bundles", []):
@@ -332,8 +375,11 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f" candidate_generations={item['archive_candidate_generations']}"
                 f" proving_streak={item.get('archive_proving_streak', 0)}"
                 f" grace_remaining={item.get('archive_post_admission_grace_remaining', 0)}"
+                f" required_proving_streak={item.get('archive_reentry_required_proving_streak', 0)}"
+                f" backoff_target={item.get('archive_reentry_backoff_target', 0)}"
                 f" reentry_attempt_count={item.get('archive_reentry_attempt_count', 0)}"
                 f" reentry_gap={item.get('archive_reentry_gap_generations')}"
+                f" tier={item.get('archive_repeat_eviction_tier', 0)}"
                 f" underperform_streak={item.get('archive_underperform_streak', 0)}"
                 f" underperform_margin={item.get('archive_underperform_margin', 0.0)}"
                 f" benchmark={item.get('archive_survivor_public_benchmark', 0.0)}"
@@ -347,7 +393,9 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 "  reentry_converted:"
                 f"{item['role']}:{item['bundle_signature']}"
                 f" gap_generations={item.get('archive_reentry_gap_generations')}"
+                f" backoff_target={item.get('archive_reentry_backoff_target', 0)}"
                 f" attempt_count={item.get('archive_reentry_attempt_count', 0)}"
+                f" tier={item.get('archive_repeat_eviction_tier', 0)}"
                 f" avg_public_score={item.get('avg_public_score', 0.0)}"
             )
         for item in summary.get("selection_summary", {}).get("decaying_bundles", []):

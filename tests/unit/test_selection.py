@@ -924,3 +924,108 @@ def test_parent_pool_prunes_archive_underperforming_bundle_before_healthy_bundle
     assert "citizen:baseline:artifact_first" not in signatures
     assert "citizen:baseline:artifact_first" not in preserved
     assert len(set(signatures)) == 3
+
+
+def test_parent_pool_penalizes_repeat_evicted_bundle_below_first_time_archive_candidate() -> None:
+    agents = [
+        _agent("agent-1", "lin-1"),
+        _agent("agent-2", "lin-2"),
+        _agent("agent-3", "lin-3"),
+    ]
+    decisions = [
+        SelectionDecision(
+            agent_id="agent-1",
+            lineage_id="lin-1",
+            role="citizen",
+            prompt_variant_id="baseline",
+            package_policy_id="balanced",
+            bundle_signature="citizen:baseline:balanced",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.97,
+            base_score=0.97,
+            public_score=0.97,
+            diversity_bonus=-0.01,
+            cohort_similarity=0.91,
+            selection_bucket="standard",
+            quarantine_status="clean",
+        ),
+        SelectionDecision(
+            agent_id="agent-2",
+            lineage_id="lin-2",
+            role="citizen",
+            prompt_variant_id="citation_strict",
+            package_policy_id="artifact_first",
+            bundle_signature="citizen:citation_strict:artifact_first",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.93,
+            base_score=0.93,
+            public_score=0.93,
+            diversity_bonus=0.01,
+            cohort_similarity=0.85,
+            selection_bucket="standard",
+            quarantine_status="clean",
+        ),
+        SelectionDecision(
+            agent_id="agent-3",
+            lineage_id="lin-3",
+            role="citizen",
+            prompt_variant_id="counterexample_first",
+            package_policy_id="memorial_first",
+            bundle_signature="citizen:counterexample_first:memorial_first",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.95,
+            base_score=0.95,
+            public_score=0.95,
+            diversity_bonus=0.02,
+            cohort_similarity=0.83,
+            selection_bucket="diversity_priority",
+            quarantine_status="clean",
+        ),
+    ]
+    decision_by_agent = {decision.agent_id: decision for decision in decisions}
+    candidates = [{"agent": agent, "decision": decision_by_agent[agent.agent_id]} for agent in agents]
+
+    pool = build_parent_candidate_pool(
+        candidates,
+        slot_count=2,
+        bundle_state_by_signature={
+            "citizen:baseline:balanced": {
+                "archive_admitted": False,
+                "archive_eviction_count": 0,
+                "archive_repeat_eviction_tier": 0,
+                "archive_decay_generations": 0,
+                "archive_decay_debt": 0,
+                "clean_win_generations": 3,
+                "avg_score": 0.97,
+            },
+            "citizen:citation_strict:artifact_first": {
+                "archive_admitted": False,
+                "archive_candidate_generations": 1,
+                "archive_admission_pending_generations": 1,
+                "archive_proving_streak": 1,
+                "archive_eviction_count": 0,
+                "archive_repeat_eviction_tier": 0,
+                "archive_decay_generations": 0,
+                "archive_decay_debt": 0,
+                "clean_win_generations": 2,
+                "avg_score": 0.93,
+            },
+            "citizen:counterexample_first:memorial_first": {
+                "archive_admitted": False,
+                "archive_eviction_count": 2,
+                "archive_repeat_eviction_tier": 2,
+                "archive_decay_generations": 0,
+                "archive_decay_debt": 0,
+                "clean_win_generations": 2,
+                "avg_score": 0.95,
+            },
+        },
+    )
+    signatures = [item["bundle_signature"] for item in pool]
+
+    assert "citizen:baseline:balanced" in signatures
+    assert "citizen:citation_strict:artifact_first" in signatures
+    assert "citizen:counterexample_first:memorial_first" not in signatures
