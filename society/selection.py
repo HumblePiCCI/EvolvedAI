@@ -257,6 +257,10 @@ def _bundle_archive_admission_probation(state: Mapping[str, Any]) -> bool:
     return _bundle_archive_admission_pending(state) or _bundle_archive_admission_proving(state)
 
 
+def _bundle_archive_underperforming(state: Mapping[str, Any]) -> bool:
+    return int(state.get("archive_underperform_streak", 0)) > 0
+
+
 def _bundle_retention_key(
     bundle_id: str,
     candidate: Mapping[str, Any],
@@ -267,6 +271,7 @@ def _bundle_retention_key(
     decision = candidate["decision"]
     return (
         int(_bundle_archive_admission_probation(state)),
+        int(_bundle_archive_underperforming(state)),
         int(state.get("stale_generations", 0)),
         int(state.get("archive_decay_generations", 0)),
         _bundle_decay_debt(state),
@@ -328,7 +333,10 @@ def _bundle_balanced_selection(
     reserve_candidates = [
         (bundle_id, item)
         for bundle_id, item in representatives
-        if not _bundle_archive_admission_probation(_bundle_state(bundle_id, bundle_state_by_signature))
+        if (
+            not _bundle_archive_admission_probation(_bundle_state(bundle_id, bundle_state_by_signature))
+            and not _bundle_archive_underperforming(_bundle_state(bundle_id, bundle_state_by_signature))
+        )
     ]
     if not reserve_candidates:
         reserve_candidates = representatives
@@ -361,6 +369,7 @@ def _bundle_balanced_selection(
                 if bundle_slots[bundle_id] > 0
             ),
             key=lambda candidate: (
+                int(_bundle_archive_underperforming(_bundle_state(candidate[0], bundle_state_by_signature))),
                 _bundle_state(candidate[0], bundle_state_by_signature).get("stale_generations", 0),
                 _bundle_state(candidate[0], bundle_state_by_signature).get("archive_decay_generations", 0),
                 _bundle_decay_debt(_bundle_state(candidate[0], bundle_state_by_signature)),
@@ -396,6 +405,7 @@ def _bundle_balanced_selection(
                     (
                         bundle_slots[bundle_id],
                         int(_bundle_archive_admission_probation(state)),
+                        int(_bundle_archive_underperforming(state)),
                         int(state.get("archive_decay_generations", 0)),
                         _bundle_decay_debt(state),
                         False,
@@ -417,6 +427,7 @@ def _bundle_balanced_selection(
                         (
                             bundle_slots[bundle_id],
                             int(_bundle_archive_admission_probation(state)),
+                            int(_bundle_archive_underperforming(state)),
                             int(state.get("archive_decay_generations", 0)),
                             _bundle_decay_debt(state),
                             False,

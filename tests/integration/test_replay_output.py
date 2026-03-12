@@ -24,12 +24,16 @@ def test_replay_renders_timeline(minimal_config) -> None:
         assert "Prompt variation" in generation_timeline
         assert "archive_admission_pending_count:" in generation_timeline
         assert "archive_proving_count:" in generation_timeline
+        assert "archive_underperform_count:" in generation_timeline
         assert "archive_admitted_count:" in generation_timeline
         assert "newly_admitted_count:" in generation_timeline
         assert "post_admission_grace_count:" in generation_timeline
+        assert "archive_eviction_count:" in generation_timeline
         assert "archive_admission_conversion_rate:" in generation_timeline
         assert "archive_failed_admission_count:" in generation_timeline
         assert "archive_cooldown_count:" in generation_timeline
+        assert "archive_cooldown_recovery_count:" in generation_timeline
+        assert "archive_cooldown_recovery_max_generations:" in generation_timeline
         assert "archive_decay_prune_count:" in generation_timeline
         assert "archive_retirement_ready_count:" in generation_timeline
         assert "stale_bundle_count:" in generation_timeline

@@ -153,12 +153,18 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             lines.append(f"  archive_proving_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_post_admission_grace_roles", []):
             lines.append(f"  archive_post_admission_grace_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_underperform_roles", []):
+            lines.append(f"  archive_underperform_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_eviction_roles", []):
+            lines.append(f"  archive_eviction_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_cooldown_roles", []):
             lines.append(f"  archive_cooldown_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_cooldown_fresh_admission_roles", []):
             lines.append(f"  archive_cooldown_fresh_admission_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_cooldown_long_lived_debt_roles", []):
             lines.append(f"  archive_cooldown_long_lived_debt_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_cooldown_recovery_roles", []):
+            lines.append(f"  archive_cooldown_recovery_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_decay_prune_roles", []):
             lines.append(f"  archive_decay_prune_role:{role}")
         lines.append(
@@ -167,6 +173,9 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
         )
         lines.append(
             f"  archive_proving_count:{summary.get('selection_summary', {}).get('archive_proving_count', 0)}"
+        )
+        lines.append(
+            f"  archive_underperform_count:{summary.get('selection_summary', {}).get('archive_underperform_count', 0)}"
         )
         lines.append(
             f"  archive_admitted_count:{summary.get('selection_summary', {}).get('archive_admitted_count', 0)}"
@@ -179,6 +188,9 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             f"{summary.get('selection_summary', {}).get('post_admission_grace_count', 0)}"
         )
         lines.append(
+            f"  archive_eviction_count:{summary.get('selection_summary', {}).get('archive_eviction_count', 0)}"
+        )
+        lines.append(
             "  archive_admission_conversion_rate:"
             f"{summary.get('selection_summary', {}).get('archive_admission_conversion_rate', 0.0)}"
         )
@@ -188,6 +200,14 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
         )
         lines.append(
             f"  archive_cooldown_count:{summary.get('selection_summary', {}).get('bundle_archive_cooldown_count', 0)}"
+        )
+        lines.append(
+            "  archive_cooldown_recovery_count:"
+            f"{summary.get('selection_summary', {}).get('bundle_archive_cooldown_recovery_count', 0)}"
+        )
+        lines.append(
+            "  archive_cooldown_recovery_max_generations:"
+            f"{summary.get('selection_summary', {}).get('bundle_archive_cooldown_recovery_max_generations', 0)}"
         )
         lines.append(
             f"  archive_decay_prune_count:{summary.get('selection_summary', {}).get('bundle_decay_prune_count', 0)}"
@@ -241,6 +261,26 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f" grace_remaining={item.get('archive_post_admission_grace_remaining', 0)}"
                 f" avg_public_score={item.get('avg_public_score', 0.0)}"
             )
+        for item in summary.get("selection_summary", {}).get("archive_underperform_bundles", []):
+            lines.append(
+                "  underperform:"
+                f"{item['role']}:{item['bundle_signature']}"
+                f" streak={item.get('archive_underperform_streak', 0)}"
+                f" margin={item.get('archive_underperform_margin', 0.0)}"
+                f" benchmark={item.get('archive_survivor_public_benchmark', 0.0)}"
+                f" grace_remaining={item.get('archive_post_admission_grace_remaining', 0)}"
+                f" avg_public_score={item.get('avg_public_score', 0.0)}"
+            )
+        for item in summary.get("selection_summary", {}).get("archive_evicted_bundles", []):
+            lines.append(
+                "  evicted:"
+                f"{item['role']}:{item['bundle_signature']}"
+                f" streak={item.get('archive_underperform_streak', 0)}"
+                f" margin={item.get('archive_underperform_margin', 0.0)}"
+                f" benchmark={item.get('archive_survivor_public_benchmark', 0.0)}"
+                f" pending_generations={item.get('archive_admission_pending_generations', 0)}"
+                f" avg_public_score={item.get('avg_public_score', 0.0)}"
+            )
         for item in summary.get("selection_summary", {}).get("archive_admitted_bundles", []):
             lines.append(
                 "  admission_accepted:"
@@ -249,6 +289,9 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f" candidate_generations={item['archive_candidate_generations']}"
                 f" proving_streak={item.get('archive_proving_streak', 0)}"
                 f" grace_remaining={item.get('archive_post_admission_grace_remaining', 0)}"
+                f" underperform_streak={item.get('archive_underperform_streak', 0)}"
+                f" underperform_margin={item.get('archive_underperform_margin', 0.0)}"
+                f" benchmark={item.get('archive_survivor_public_benchmark', 0.0)}"
                 f" converted={str(item.get('archive_admission_converted', False)).lower()}"
                 f" useful_streak={item.get('archive_useful_clean_streak', 0)}"
                 f" retirement_credit={item.get('archive_retirement_credit', 0)}"
@@ -295,6 +338,13 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f" retirement_credit={item.get('archive_retirement_credit', 0)}"
                 f" avg_public_score={item.get('avg_public_score', 0.0)}"
                 f" reason={item.get('pruned_reason', 'bundle_pressure_pruned')}"
+            )
+        for item in summary.get("selection_summary", {}).get("bundle_archive_cooldown_recoveries", []):
+            lines.append(
+                "  cooldown_recovered:"
+                f"{item['role']}"
+                f" generations={item.get('cooldown_generations', 0)}"
+                f" reason={item.get('recovery_reason', 'debt_cleared')}"
             )
         for lineage_id in summary.get("selection_summary", {}).get("bundle_archive_lineages", []):
             lines.append(f"  archive_lineage:{lineage_id}")
