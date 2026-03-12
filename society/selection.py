@@ -266,7 +266,7 @@ def _bundle_retention_key(
     candidate: Mapping[str, Any],
     bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None,
     by_bundle: Mapping[str, Sequence[Mapping[str, Any]]],
-) -> tuple[int, int, int, int, int, float, float, int]:
+) -> tuple[int, int, int, int, int, int, float, float, int]:
     state = _bundle_state(bundle_id, bundle_state_by_signature)
     decision = candidate["decision"]
     return (
@@ -392,7 +392,7 @@ def _bundle_balanced_selection(
 
     while len(selected) < slot_count:
         candidate_options: list[
-            tuple[tuple[int, int, int, int, bool, float, float, int], str, dict[str, Any]]
+            tuple[tuple[int, int, int, int, int, int, float, float, int], str, dict[str, Any]]
         ] = []
         for bundle_id, items in by_bundle.items():
             if reserve_penalty_slots > 0 and bundle_slots[bundle_id] == 0:
@@ -408,7 +408,7 @@ def _bundle_balanced_selection(
                         int(_bundle_archive_underperforming(state)),
                         int(state.get("archive_decay_generations", 0)),
                         _bundle_decay_debt(state),
-                        False,
+                        0,
                         -decision.score,
                         -decision.diversity_bonus,
                         len(decision.reasons),
@@ -430,7 +430,7 @@ def _bundle_balanced_selection(
                             int(_bundle_archive_underperforming(state)),
                             int(state.get("archive_decay_generations", 0)),
                             _bundle_decay_debt(state),
-                            False,
+                            0,
                             -decision.score,
                             -decision.diversity_bonus,
                             len(decision.reasons),
