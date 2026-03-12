@@ -41,6 +41,9 @@ def test_replay_renders_timeline(minimal_config) -> None:
         assert "archive_retired_count:" in generation_timeline
         assert "archive_failed_admission_count:" in generation_timeline
         assert "archive_cooldown_count:" in generation_timeline
+        assert "archive_coexistence_budget_count:" in generation_timeline
+        assert "archive_cooldown_true_overload_count:" in generation_timeline
+        assert "archive_cooldown_avoidable_duplicate_count:" in generation_timeline
         assert "archive_cooldown_recovery_count:" in generation_timeline
         assert "archive_cooldown_recovery_max_generations:" in generation_timeline
         assert "archive_decay_prune_count:" in generation_timeline

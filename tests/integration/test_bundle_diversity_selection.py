@@ -80,12 +80,14 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert any(metric["archive_reentry_converted_count"] > 0 for metric in post_root)
         assert any(metric["archive_reentry_mean_gap_generations"] > 0.0 for metric in post_root)
         assert any(metric["archive_retired_count"] > 0 for metric in post_root)
+        assert any(metric["bundle_archive_coexistence_budget_count"] > 0 for metric in post_root)
         assert any(metric["bundle_turnover_rate"] > 0.0 for metric in post_root)
         assert any(metric["new_bundle_win_rate"] > 0.0 for metric in post_root)
         assert any(metric["exploration_bundle_survival_rate"] > 0.0 for metric in post_root)
         assert any(metric["bundle_archive_reentry_backoff_roles"] for metric in post_root)
         assert any(metric["bundle_archive_reentry_block_roles"] for metric in post_root)
         assert any(metric["bundle_archive_escalated_backoff_roles"] for metric in post_root)
+        assert any(metric["bundle_archive_coexistence_budget_roles"] for metric in post_root)
         assert any(metric["bundle_archive_underperform_roles"] for metric in post_root)
         assert any(metric["bundle_archive_eviction_roles"] for metric in post_root)
         assert any(metric["bundle_archive_repeat_eviction_roles"] for metric in post_root)
@@ -108,7 +110,7 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert admitted_generation["post_admission_grace_count"] > 0
         assert admitted_generation["bundle_archive_cooldown_count"] == 0
         assert admitted_generation["bundle_archive_post_admission_grace_roles"]
-        assert admitted_generation["bundle_archive_cooldown_fresh_admission_roles"]
+        assert not admitted_generation["bundle_archive_cooldown_fresh_admission_roles"]
         assert not admitted_generation["bundle_archive_cooldown_long_lived_debt_roles"]
         eviction_generation = next(metric for metric in post_root if metric["archive_eviction_count"] > 0)
         assert eviction_generation["archive_underperform_count"] > 0
@@ -127,6 +129,22 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert reentry_generation["archive_admitted_count"] > 0
         assert reentry_generation["newly_admitted_count"] > 0
         assert reentry_generation["archive_reentry_mean_gap_generations"] >= 4.0
+        coexistence_readmission_generation = next(
+            metric
+            for metric in post_root
+            if metric["bundle_archive_coexistence_budget_count"] > 0 and metric["archive_admitted_count"] > 0
+        )
+        assert coexistence_readmission_generation["bundle_archive_cooldown_count"] == 0
+        assert coexistence_readmission_generation["bundle_archive_cooldown_fresh_admission_roles"] == []
+        assert coexistence_readmission_generation["bundle_archive_cooldown_true_overload_count"] == 0
+        coexistence_stabilized_generation = next(
+            metric
+            for metric in post_root
+            if metric["bundle_archive_coexistence_budget_count"] > 0 and metric["newly_admitted_count"] == 0
+        )
+        assert coexistence_stabilized_generation["bundle_archive_cooldown_count"] == 0
+        assert coexistence_stabilized_generation["bundle_archive_cooldown_true_overload_count"] == 0
+        assert coexistence_stabilized_generation["bundle_archive_cooldown_avoidable_duplicate_count"] == 0
         repeat_eviction_generation = next(metric for metric in post_root if metric["repeat_eviction_count"] > 0)
         assert repeat_eviction_generation["archive_eviction_count"] > 0
         assert repeat_eviction_generation["archive_repeat_eviction_max_tier"] >= 2
@@ -169,16 +187,22 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert "archive_reentry_max_gap_generations" in latest_summary["selection_summary"]
         assert "archive_retired_count" in latest_summary["selection_summary"]
         assert "archive_failed_admission_count" in latest_summary["selection_summary"]
+        assert "bundle_archive_coexistence_budget_count" in latest_summary["selection_summary"]
+        assert "bundle_archive_cooldown_true_overload_count" in latest_summary["selection_summary"]
+        assert "bundle_archive_cooldown_avoidable_duplicate_count" in latest_summary["selection_summary"]
         assert "bundle_archive_post_admission_grace_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_reentry_backoff_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_reentry_block_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_escalated_backoff_roles" in latest_summary["selection_summary"]
+        assert "bundle_archive_coexistence_budget_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_underperform_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_eviction_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_repeat_eviction_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_retired_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_cooldown_fresh_admission_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_cooldown_long_lived_debt_roles" in latest_summary["selection_summary"]
+        assert "bundle_archive_cooldown_true_overload_roles" in latest_summary["selection_summary"]
+        assert "bundle_archive_cooldown_avoidable_duplicate_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_cooldown_recovery_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_cooldown_recovery_count" in latest_summary["selection_summary"]
         assert "bundle_archive_cooldown_recovery_max_generations" in latest_summary["selection_summary"]
