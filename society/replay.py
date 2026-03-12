@@ -106,6 +106,18 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             )
         lines.append("")
 
+    inheritance_effect = summary.get("inheritance_effect", {})
+    if inheritance_effect:
+        lines.append("Inheritance effect")
+        lines.append(
+            f"  warned={inheritance_effect.get('warned_lineages', 0)} "
+            f"avoided={inheritance_effect.get('avoided_recurrence', 0)} "
+            f"repeated={inheritance_effect.get('repeated_warning', 0)} "
+            f"shifted={inheritance_effect.get('shifted_failure', 0)} "
+            f"transfer={inheritance_effect.get('transfer_score', 0.0)}"
+        )
+        lines.append("")
+
     drift = summary.get("drift", {})
     if drift:
         lines.append("Drift")
