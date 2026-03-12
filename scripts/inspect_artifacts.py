@@ -14,9 +14,11 @@ from society.storage import StorageManager
 def main() -> int:
     parser = argparse.ArgumentParser(description="Inspect stored artifacts for a generation.")
     parser.add_argument("generation_id", type=int)
+    parser.add_argument("--root-dir", default=str(ROOT / "data"))
+    parser.add_argument("--db-path", default=str(ROOT / "data/db.sqlite"))
     args = parser.parse_args()
 
-    storage = StorageManager(root_dir=ROOT / "data", db_path=ROOT / "data/db.sqlite")
+    storage = StorageManager(root_dir=Path(args.root_dir), db_path=Path(args.db_path))
     try:
         for artifact in storage.list_generation_artifacts(args.generation_id):
             print(artifact.model_dump_json(indent=2))
@@ -27,4 +29,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

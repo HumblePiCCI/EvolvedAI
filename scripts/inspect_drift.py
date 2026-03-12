@@ -16,9 +16,11 @@ from society.trust import compute_drift_metrics
 def main() -> int:
     parser = argparse.ArgumentParser(description="Inspect drift metrics for a generation.")
     parser.add_argument("generation_id", type=int)
+    parser.add_argument("--root-dir", default=str(ROOT / "data"))
+    parser.add_argument("--db-path", default=str(ROOT / "data/db.sqlite"))
     args = parser.parse_args()
 
-    storage = StorageManager(root_dir=ROOT / "data", db_path=ROOT / "data/db.sqlite")
+    storage = StorageManager(root_dir=Path(args.root_dir), db_path=Path(args.db_path))
     try:
         artifacts = storage.list_generation_artifacts(args.generation_id)
         memorials = storage.list_generation_memorials(args.generation_id)
@@ -35,4 +37,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

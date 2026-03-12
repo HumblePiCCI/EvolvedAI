@@ -14,9 +14,11 @@ from society.storage import StorageManager
 def main() -> int:
     parser = argparse.ArgumentParser(description="Inspect one lineage record.")
     parser.add_argument("lineage_id")
+    parser.add_argument("--root-dir", default=str(ROOT / "data"))
+    parser.add_argument("--db-path", default=str(ROOT / "data/db.sqlite"))
     args = parser.parse_args()
 
-    storage = StorageManager(root_dir=ROOT / "data", db_path=ROOT / "data/db.sqlite")
+    storage = StorageManager(root_dir=Path(args.root_dir), db_path=Path(args.db_path))
     try:
         lineage = storage.get_lineage(args.lineage_id)
         if lineage is None:
@@ -29,4 +31,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
