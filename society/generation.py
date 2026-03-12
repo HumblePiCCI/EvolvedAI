@@ -32,7 +32,7 @@ from society.schemas import (
     InheritancePackage,
     LineageRecord,
 )
-from society.selection import select_candidates
+from society.selection import build_parent_candidate_pool, select_candidates
 from society.storage import StorageManager
 from society.trust import compute_drift_metrics, summarize_warning_effect, warning_labels
 from society.utils import sha256_data, utc_now
@@ -192,13 +192,9 @@ class GenerationRunner:
             if decision.eligible:
                 eligible_by_role[agent.role].append({"agent": agent, "decision": decision})
         for role, candidates in eligible_by_role.items():
-            candidates.sort(
-                key=lambda candidate: (
-                    candidate["decision"].score,
-                    candidate["decision"].public_score,
-                    -len(candidate["decision"].reasons),
-                ),
-                reverse=True,
+            eligible_by_role[role] = build_parent_candidate_pool(
+                candidates,
+                slot_count=self.config.roles.distribution.get(role, len(candidates)),
             )
 
         current_registry_by_role = build_role_scoped_taboo_registry(
@@ -646,11 +642,26 @@ class GenerationRunner:
         )
         honored_contributions = [memorial.top_contribution for memorial in memorials if memorial.classification == "honored"]
         notable_failures = [memorial.failure_mode for memorial in memorials if memorial.failure_mode]
+        role_monoculture_index = {
+            role: round(
+                statistics.fmean([decision.cohort_similarity for decision in selection if decision.role == role]),
+                4,
+            )
+            if any(decision.role == role for decision in selection)
+            else 0.0
+            for role in sorted({decision.role for decision in selection})
+        }
+        diversity_priority_lineages = [
+            decision.lineage_id for decision in selection if decision.selection_bucket == "diversity_priority"
+        ]
         selection_summary = {
             "eligible": sum(decision.eligible for decision in selection),
             "propagation_blocked": sum(decision.propagation_blocked for decision in selection),
             "review_only": sum(decision.quarantine_status == QUARANTINE_REVIEW for decision in selection),
             "survivor_lineages": [decision.lineage_id for decision in selection if decision.eligible][:5],
+            "role_monoculture_index": role_monoculture_index,
+            "diversity_priority_lineages": diversity_priority_lineages[:5],
+            "diversity_priority_count": len(diversity_priority_lineages),
         }
         return {
             "generation_id": generation_id,
@@ -719,6 +730,7 @@ class GenerationRunner:
                 f"- propagation_blocked: {summary['selection_summary']['propagation_blocked']}",
                 f"- review_only: {summary['selection_summary']['review_only']}",
                 f"- survivor_lineages: {', '.join(summary['selection_summary']['survivor_lineages']) or 'none'}",
+                f"- diversity_priority_lineages: {', '.join(summary['selection_summary']['diversity_priority_lineages']) or 'none'}",
                 "",
                 "## Quarantine",
                 "",
@@ -739,6 +751,9 @@ class GenerationRunner:
                 f"inherited_artifacts={len(update['inherited_artifact_ids'])} "
                 f"inherited_memorials={len(update['inherited_memorial_ids'])}"
             )
+        lines.extend(["", "## Monoculture", ""])
+        for role, value in summary["selection_summary"].get("role_monoculture_index", {}).items():
+            lines.append(f"- {role}: {value}")
         effect = summary.get("inheritance_effect", {})
         lines.extend(["", "## Inheritance effect", ""])
         lines.extend(
