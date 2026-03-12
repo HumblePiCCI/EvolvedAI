@@ -9,6 +9,7 @@ from evals import run_eval_suite
 from society.config import AutoCivConfig, dump_config_snapshot
 from society.constants import (
     ACTIVE_STATUS,
+    BUNDLE_ARCHIVE_COOLDOWN_DEBT_THRESHOLD,
     BUNDLE_ARCHIVE_EXPLORATION_SLOTS,
     BUNDLE_ARCHIVE_MIN_ROLE_SIZE,
     BUNDLE_ARCHIVE_MONOCULTURE_THRESHOLD,
@@ -302,12 +303,21 @@ class GenerationRunner:
                 else 0.0
                 for role in sorted({decision.role for decision in selection})
             }
-        bundle_archive_roles = {
+        bundle_archive_candidate_roles = {
             role
             for role, score in role_monoculture_index.items()
             if score >= BUNDLE_ARCHIVE_MONOCULTURE_THRESHOLD
             and role_counts.get(role, 0) >= BUNDLE_ARCHIVE_MIN_ROLE_SIZE
         }
+        bundle_archive_cooldown_roles = {
+            role
+            for role in bundle_archive_candidate_roles
+            if any(
+                int(state.get("archive_decay_debt", 0)) >= BUNDLE_ARCHIVE_COOLDOWN_DEBT_THRESHOLD
+                for state in (bundle_state_by_role or {}).get(role, {}).values()
+            )
+        }
+        bundle_archive_roles = bundle_archive_candidate_roles - bundle_archive_cooldown_roles
 
         for role in sorted({agent.role for agent in agents}):
             candidates = [
@@ -390,6 +400,8 @@ class GenerationRunner:
             "preserved_bundles": preserved_bundles,
             "pruned_bundles": pruned_bundles,
             "bundle_archive_roles": sorted(bundle_archive_roles),
+            "bundle_archive_candidate_roles": sorted(bundle_archive_candidate_roles),
+            "bundle_archive_cooldown_roles": sorted(bundle_archive_cooldown_roles),
         }
 
     def _bundle_state_by_role(
@@ -1169,7 +1181,10 @@ class GenerationRunner:
             "preserved_bundle_lineages": [item["lineage_id"] for item in parent_pool_summary["preserved_bundles"]],
             "preserved_bundle_count": len(parent_pool_summary["preserved_bundles"]),
             "preserved_bundles": parent_pool_summary["preserved_bundles"],
+            "bundle_archive_candidate_roles": parent_pool_summary["bundle_archive_candidate_roles"],
             "bundle_archive_roles": parent_pool_summary["bundle_archive_roles"],
+            "bundle_archive_cooldown_roles": parent_pool_summary["bundle_archive_cooldown_roles"],
+            "bundle_archive_cooldown_count": len(parent_pool_summary["bundle_archive_cooldown_roles"]),
             "bundle_archive_lineages": bundle_archive_lineages,
             "bundle_archive_count": len(bundle_archive_lineages),
             "bundle_state_by_role": bundle_state_by_role,
@@ -1255,6 +1270,8 @@ class GenerationRunner:
                 f"- survivor_lineages: {', '.join(summary['selection_summary']['survivor_lineages']) or 'none'}",
                 f"- diversity_priority_lineages: {', '.join(summary['selection_summary']['diversity_priority_lineages']) or 'none'}",
                 f"- preserved_bundle_lineages: {', '.join(summary['selection_summary'].get('preserved_bundle_lineages', [])) or 'none'}",
+                f"- bundle_archive_candidate_roles: {', '.join(summary['selection_summary'].get('bundle_archive_candidate_roles', [])) or 'none'}",
+                f"- bundle_archive_cooldown_roles: {', '.join(summary['selection_summary'].get('bundle_archive_cooldown_roles', [])) or 'none'}",
                 f"- bundle_archive_lineages: {', '.join(summary['selection_summary'].get('bundle_archive_lineages', [])) or 'none'}",
                 f"- pruned_bundle_count: {summary['selection_summary'].get('pruned_bundle_count', 0)}",
                 f"- stale_bundle_count: {summary['selection_summary'].get('stale_bundle_count', 0)}",
@@ -1297,6 +1314,8 @@ class GenerationRunner:
             )
         for role in summary["selection_summary"].get("bundle_archive_roles", []):
             lines.append(f"- archive_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_cooldown_roles", []):
+            lines.append(f"- archive_cooldown_role:{role}")
         for item in summary["selection_summary"].get("pruned_bundles", []):
             lines.append(
                 f"- pruned:{item['role']}:{item['bundle_signature']} stale={item['stale_generations']} "

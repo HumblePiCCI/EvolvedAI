@@ -449,7 +449,10 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     if item.get("bundle_signature")
                 ],
                 "bundle_archive_count": selection_summary.get("bundle_archive_count", 0),
+                "bundle_archive_candidate_roles": selection_summary.get("bundle_archive_candidate_roles", []),
                 "bundle_archive_roles": selection_summary.get("bundle_archive_roles", []),
+                "bundle_archive_cooldown_roles": selection_summary.get("bundle_archive_cooldown_roles", []),
+                "bundle_archive_cooldown_count": selection_summary.get("bundle_archive_cooldown_count", 0),
                 "stale_bundle_count": selection_summary.get("stale_bundle_count", 0),
                 "decaying_bundle_count": selection_summary.get("decaying_bundle_count", 0),
                 "pruned_bundle_count": selection_summary.get("pruned_bundle_count", 0),
@@ -518,6 +521,9 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         bundle_delta = last["prompt_bundle_count"] - first["prompt_bundle_count"]
         bundle_survival_delta = round(last["bundle_survival_rate"] - first["bundle_survival_rate"], 4)
         bundle_turnover_delta = round(last["bundle_turnover_rate"] - first["bundle_turnover_rate"], 4)
+        bundle_archive_cooldown_delta = (
+            last["bundle_archive_cooldown_count"] - first["bundle_archive_cooldown_count"]
+        )
         stale_bundle_delta = last["stale_bundle_count"] - first["stale_bundle_count"]
         decaying_bundle_delta = last["decaying_bundle_count"] - first["decaying_bundle_count"]
         pruned_bundle_delta = last["pruned_bundle_count"] - first["pruned_bundle_count"]
@@ -570,6 +576,12 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             notes.append(f"Bundle turnover rate fell by {-bundle_turnover_delta} across the batch.")
         else:
             notes.append("Bundle turnover rate stayed flat across the batch.")
+        if bundle_archive_cooldown_delta > 0:
+            notes.append(f"Archive cooldown blocked {bundle_archive_cooldown_delta} more roles by the end of the batch.")
+        elif bundle_archive_cooldown_delta < 0:
+            notes.append(f"Archive cooldown pressure fell by {-bundle_archive_cooldown_delta} roles across the batch.")
+        else:
+            notes.append("Archive cooldown pressure stayed flat across the batch.")
         if stale_bundle_delta > 0:
             notes.append(f"Stale bundle count increased by {stale_bundle_delta} across the batch.")
         elif stale_bundle_delta < 0:
@@ -642,6 +654,7 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"exploration_bundle_survival_rate={metric['exploration_bundle_survival_rate']} "
             f"preserved_bundle_count={metric['preserved_bundle_count']} "
             f"bundle_archive_count={metric['bundle_archive_count']} "
+            f"bundle_archive_cooldown_count={metric['bundle_archive_cooldown_count']} "
             f"stale_bundle_count={metric['stale_bundle_count']} "
             f"decaying_bundle_count={metric['decaying_bundle_count']} "
             f"pruned_bundle_count={metric['pruned_bundle_count']} "
@@ -659,6 +672,10 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             lines.append(f"  preserved_bundles={','.join(metric['preserved_bundles'])}")
         if metric["bundle_archive_roles"]:
             lines.append(f"  bundle_archive_roles={','.join(metric['bundle_archive_roles'])}")
+        if metric["bundle_archive_cooldown_roles"]:
+            lines.append(
+                f"  bundle_archive_cooldown_roles={','.join(metric['bundle_archive_cooldown_roles'])}"
+            )
         if metric["pruned_bundles"]:
             lines.append(
                 "  pruned_bundles="

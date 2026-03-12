@@ -147,6 +147,11 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             )
         for role in summary.get("selection_summary", {}).get("bundle_archive_roles", []):
             lines.append(f"  archive_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_cooldown_roles", []):
+            lines.append(f"  archive_cooldown_role:{role}")
+        lines.append(
+            f"  archive_cooldown_count:{summary.get('selection_summary', {}).get('bundle_archive_cooldown_count', 0)}"
+        )
         lines.append(
             f"  stale_bundle_count:{summary.get('selection_summary', {}).get('stale_bundle_count', 0)}"
         )
