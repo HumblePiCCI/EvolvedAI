@@ -453,11 +453,25 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 "bundle_archive_roles": selection_summary.get("bundle_archive_roles", []),
                 "bundle_archive_pending_roles": selection_summary.get("bundle_archive_pending_roles", []),
                 "bundle_archive_proving_roles": selection_summary.get("bundle_archive_proving_roles", []),
+                "bundle_archive_post_admission_grace_roles": selection_summary.get(
+                    "bundle_archive_post_admission_grace_roles",
+                    [],
+                ),
                 "bundle_archive_cooldown_roles": selection_summary.get("bundle_archive_cooldown_roles", []),
+                "bundle_archive_cooldown_fresh_admission_roles": selection_summary.get(
+                    "bundle_archive_cooldown_fresh_admission_roles",
+                    [],
+                ),
+                "bundle_archive_cooldown_long_lived_debt_roles": selection_summary.get(
+                    "bundle_archive_cooldown_long_lived_debt_roles",
+                    [],
+                ),
                 "bundle_archive_cooldown_count": selection_summary.get("bundle_archive_cooldown_count", 0),
                 "archive_admission_pending_count": selection_summary.get("archive_admission_pending_count", 0),
                 "archive_proving_count": selection_summary.get("archive_proving_count", 0),
                 "archive_admitted_count": selection_summary.get("archive_admitted_count", 0),
+                "newly_admitted_count": selection_summary.get("newly_admitted_count", 0),
+                "post_admission_grace_count": selection_summary.get("post_admission_grace_count", 0),
                 "archive_admission_conversion_rate": selection_summary.get("archive_admission_conversion_rate", 0.0),
                 "archive_failed_admission_count": selection_summary.get("archive_failed_admission_count", 0),
                 "bundle_decay_prune_roles": selection_summary.get("bundle_decay_prune_roles", []),
@@ -536,6 +550,8 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         )
         archive_proving_delta = last["archive_proving_count"] - first["archive_proving_count"]
         archive_admitted_delta = last["archive_admitted_count"] - first["archive_admitted_count"]
+        newly_admitted_delta = last["newly_admitted_count"] - first["newly_admitted_count"]
+        post_admission_grace_delta = last["post_admission_grace_count"] - first["post_admission_grace_count"]
         archive_conversion_delta = round(
             last["archive_admission_conversion_rate"] - first["archive_admission_conversion_rate"],
             4,
@@ -622,6 +638,22 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             notes.append(f"Archive admissions fell by {-archive_admitted_delta} bundles across the batch.")
         else:
             notes.append("Archive admissions stayed flat across the batch.")
+        if newly_admitted_delta > 0:
+            notes.append(f"New archive admissions increased by {newly_admitted_delta} bundles across the batch.")
+        elif newly_admitted_delta < 0:
+            notes.append(f"New archive admissions fell by {-newly_admitted_delta} bundles across the batch.")
+        else:
+            notes.append("New archive admissions stayed flat across the batch.")
+        if post_admission_grace_delta > 0:
+            notes.append(
+                f"Post-admission grace coverage increased by {post_admission_grace_delta} bundles across the batch."
+            )
+        elif post_admission_grace_delta < 0:
+            notes.append(
+                f"Post-admission grace coverage fell by {-post_admission_grace_delta} bundles across the batch."
+            )
+        else:
+            notes.append("Post-admission grace coverage stayed flat across the batch.")
         if archive_conversion_delta > 0:
             notes.append(f"Archive admission conversion rate increased by {archive_conversion_delta} across the batch.")
         elif archive_conversion_delta < 0:
@@ -731,6 +763,8 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"archive_admission_pending_count={metric['archive_admission_pending_count']} "
             f"archive_proving_count={metric['archive_proving_count']} "
             f"archive_admitted_count={metric['archive_admitted_count']} "
+            f"newly_admitted_count={metric['newly_admitted_count']} "
+            f"post_admission_grace_count={metric['post_admission_grace_count']} "
             f"archive_admission_conversion_rate={metric['archive_admission_conversion_rate']} "
             f"archive_failed_admission_count={metric['archive_failed_admission_count']} "
             f"bundle_archive_cooldown_count={metric['bundle_archive_cooldown_count']} "
@@ -761,9 +795,24 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             lines.append(
                 f"  bundle_archive_proving_roles={','.join(metric['bundle_archive_proving_roles'])}"
             )
+        if metric["bundle_archive_post_admission_grace_roles"]:
+            lines.append(
+                "  bundle_archive_post_admission_grace_roles="
+                + ",".join(metric["bundle_archive_post_admission_grace_roles"])
+            )
         if metric["bundle_archive_cooldown_roles"]:
             lines.append(
                 f"  bundle_archive_cooldown_roles={','.join(metric['bundle_archive_cooldown_roles'])}"
+            )
+        if metric["bundle_archive_cooldown_fresh_admission_roles"]:
+            lines.append(
+                "  bundle_archive_cooldown_fresh_admission_roles="
+                + ",".join(metric["bundle_archive_cooldown_fresh_admission_roles"])
+            )
+        if metric["bundle_archive_cooldown_long_lived_debt_roles"]:
+            lines.append(
+                "  bundle_archive_cooldown_long_lived_debt_roles="
+                + ",".join(metric["bundle_archive_cooldown_long_lived_debt_roles"])
             )
         if metric["bundle_decay_prune_roles"]:
             lines.append(

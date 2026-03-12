@@ -67,12 +67,16 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert any(metric["archive_admission_pending_count"] > 0 for metric in post_root)
         assert any(metric["archive_proving_count"] > 0 for metric in post_root)
         assert any(metric["archive_admitted_count"] > 0 for metric in post_root)
+        assert any(metric["newly_admitted_count"] > 0 for metric in post_root)
+        assert any(metric["post_admission_grace_count"] > 0 for metric in post_root)
         assert any(metric["archive_admission_conversion_rate"] > 0.0 for metric in post_root)
         assert any(metric["bundle_turnover_rate"] > 0.0 for metric in post_root)
         assert any(metric["new_bundle_win_rate"] > 0.0 for metric in post_root)
         assert any(metric["exploration_bundle_survival_rate"] > 0.0 for metric in post_root)
         assert any(metric["decaying_bundle_count"] > 0 for metric in post_root)
         assert any(metric["bundle_archive_cooldown_count"] > 0 for metric in post_root)
+        assert any(metric["bundle_archive_cooldown_fresh_admission_roles"] for metric in post_root)
+        assert any(metric["bundle_archive_cooldown_long_lived_debt_roles"] for metric in post_root)
         assert any(metric["bundle_decay_prune_count"] > 0 for metric in post_root)
         assert any(metric["pruned_bundle_count"] > 0 for metric in post_root)
         assert any(
@@ -92,7 +96,23 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         )
         first_archive_generation = next(metric for metric in post_root if metric["bundle_archive_count"] > 0)
         assert first_archive_generation["archive_admitted_count"] == 0
+        assert first_archive_generation["newly_admitted_count"] == 0
+        assert first_archive_generation["post_admission_grace_count"] == 0
         assert first_archive_generation["bundle_archive_cooldown_count"] == 0
+        admitted_generation_index = next(
+            index for index, metric in enumerate(post_root) if metric["newly_admitted_count"] > 0
+        )
+        admitted_generation = post_root[admitted_generation_index]
+        assert admitted_generation["archive_admitted_count"] > 0
+        assert admitted_generation["post_admission_grace_count"] > 0
+        assert admitted_generation["bundle_archive_cooldown_count"] == 0
+        assert admitted_generation["bundle_archive_post_admission_grace_roles"]
+        assert admitted_generation["bundle_archive_cooldown_fresh_admission_roles"]
+        assert not admitted_generation["bundle_archive_cooldown_long_lived_debt_roles"]
+        assert any(
+            later_metric["bundle_archive_cooldown_long_lived_debt_roles"]
+            for later_metric in post_root[admitted_generation_index + 1 :]
+        )
         assert max(metric["prompt_bundle_count"] for metric in post_root) < 9
         assert any(
             post_root[index]["prompt_bundle_count"] <= post_root[index - 1]["prompt_bundle_count"]
@@ -119,8 +139,13 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert "archive_admission_pending_count" in latest_summary["selection_summary"]
         assert "archive_proving_count" in latest_summary["selection_summary"]
         assert "archive_admitted_count" in latest_summary["selection_summary"]
+        assert "newly_admitted_count" in latest_summary["selection_summary"]
+        assert "post_admission_grace_count" in latest_summary["selection_summary"]
         assert "archive_admission_conversion_rate" in latest_summary["selection_summary"]
         assert "archive_failed_admission_count" in latest_summary["selection_summary"]
+        assert "bundle_archive_post_admission_grace_roles" in latest_summary["selection_summary"]
+        assert "bundle_archive_cooldown_fresh_admission_roles" in latest_summary["selection_summary"]
+        assert "bundle_archive_cooldown_long_lived_debt_roles" in latest_summary["selection_summary"]
         assert "stale_bundle_count" in latest_summary["selection_summary"]
         assert "decaying_bundle_count" in latest_summary["selection_summary"]
         assert "bundle_decay_prune_count" in latest_summary["selection_summary"]
