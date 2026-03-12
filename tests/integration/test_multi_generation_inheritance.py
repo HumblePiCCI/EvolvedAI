@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from society.generation import GenerationRunner
+from society.prompts import load_role_prompts
 from society.providers import build_provider
 from society.storage import StorageManager
 
@@ -65,5 +66,60 @@ def test_sticky_taboo_registry_survives_one_clean_generation(minimal_config) -> 
         assert summary_two["inheritance_effect"]["warned_lineages"] >= 1
         assert summary_two["inheritance_effect"]["avoided_recurrence"] >= 1
         assert summary_two["inheritance_effect"]["transfer_score"] > 0.0
+    finally:
+        storage.close()
+
+
+def test_spawn_population_carries_archive_source_benchmark_fields(minimal_config) -> None:
+    storage = StorageManager(root_dir=minimal_config.storage.root_dir, db_path=minimal_config.storage.db_path)
+    provider = build_provider(minimal_config.provider.name, minimal_config.provider.model)
+    try:
+        runner = GenerationRunner(config=minimal_config, storage=storage, provider=provider, repo_root=REPO_ROOT)
+        summary_one = runner.run(generation_id=1)
+        generation_one = storage.get_generation(1)
+        assert generation_one is not None
+
+        selection_summary = generation_one.summary_json.get("selection_summary", {})
+        bundle_state_by_role = selection_summary.get("bundle_state_by_role", {})
+        for update in summary_one["lineage_updates"]:
+            if update["role"] != "citizen":
+                continue
+            bundle_state = bundle_state_by_role.setdefault("citizen", {}).setdefault(update["bundle_signature"], {})
+            bundle_state.update(
+                {
+                    "archive_admitted": True,
+                    "archive_value_qualified": True,
+                    "archive_comparative_lift": 0.03,
+                    "archive_transfer_success_rate": 0.5,
+                    "archive_retired": False,
+                }
+            )
+        storage.put_generation(
+            generation_one.model_copy(
+                update={
+                    "summary_json": {
+                        **generation_one.summary_json,
+                        "selection_summary": {
+                            **selection_summary,
+                            "bundle_state_by_role": bundle_state_by_role,
+                        },
+                    }
+                }
+            )
+        )
+
+        prompts = load_role_prompts(list(minimal_config.roles.distribution.keys()), roles_dir=REPO_ROOT / "roles")
+        _, _, lineage_updates = runner._spawn_population(2, prompts)
+        carried = [
+            update
+            for update in lineage_updates
+            if update["role"] == "citizen" and update["inheritance_source_agent_id"] is not None
+        ]
+
+        assert carried
+        assert any(update["inheritance_source_archive_admitted"] for update in carried)
+        assert any(update["inheritance_source_archive_value_qualified"] for update in carried)
+        assert any(update["inheritance_source_archive_comparative_lift"] == 0.03 for update in carried)
+        assert any(update["inheritance_source_archive_transfer_success_rate"] == 0.5 for update in carried)
     finally:
         storage.close()

@@ -282,6 +282,7 @@ class GenerationRunner:
             "prompt_variant_by_agent": prompt_variant_by_agent,
             "package_policy_by_agent": package_policy_by_agent,
             "bundle_signatures_by_role": bundle_signatures_by_role,
+            "bundle_state_by_role": prior_bundle_state_by_role,
             "prior_role_monoculture": prior_role_monoculture,
             "bundle_archive_roles": parent_pool_summary["bundle_archive_roles"],
         }
@@ -406,6 +407,25 @@ class GenerationRunner:
                 float(state.get("archive_comparative_lift", 0.0)) < BUNDLE_ARCHIVE_COMPARATIVE_LIFT_MIN
                 and float(state.get("archive_incumbent_public_benchmark", 0.0)) > 0
                 and int(state.get("archive_candidate_generations", 0)) > 0
+                for state in (bundle_state_by_role or {}).get(role, {}).values()
+            )
+        }
+        bundle_archive_transfer_success_roles = {
+            role
+            for role in bundle_archive_candidate_roles
+            if any(
+                bool(state.get("archive_transfer_required", False))
+                and float(state.get("archive_transfer_success_rate", 0.0)) > 0.0
+                for state in (bundle_state_by_role or {}).get(role, {}).values()
+            )
+        }
+        bundle_archive_transfer_failure_roles = {
+            role
+            for role in bundle_archive_candidate_roles
+            if any(
+                bool(state.get("archive_transfer_required", False))
+                and int(state.get("archive_transfer_observed_count", 0)) > 0
+                and float(state.get("archive_transfer_success_rate", 0.0)) == 0.0
                 for state in (bundle_state_by_role or {}).get(role, {}).values()
             )
         }
@@ -566,6 +586,10 @@ class GenerationRunner:
                     pruned_reason = "archive_reentry_backoff_pruned"
                 elif bool(state.get("archive_retired", False)):
                     pruned_reason = "archive_retired_pruned"
+                elif bool(state.get("archive_transfer_required", False)) and int(
+                    state.get("archive_transfer_failure_streak", 0)
+                ) > 0:
+                    pruned_reason = "archive_transfer_pruned"
                 elif bool(state.get("archive_candidate_generations", 0)) and not bool(state.get("archive_admitted", False)):
                     pruned_reason = "archive_admission_pruned"
                 elif int(state.get("archive_decay_generations", 0)) >= BUNDLE_ARCHIVE_DECAY_PRUNE_GENERATION_THRESHOLD:
@@ -612,6 +636,9 @@ class GenerationRunner:
                         "archive_useful_clean_streak": int(state.get("archive_useful_clean_streak", 0)),
                         "archive_retirement_credit": int(state.get("archive_retirement_credit", 0)),
                         "avg_public_score": float(state.get("avg_public_score", 0.0)),
+                        "archive_transfer_success_rate": float(state.get("archive_transfer_success_rate", 0.0)),
+                        "archive_transfer_lift_retention": float(state.get("archive_transfer_lift_retention", 0.0)),
+                        "archive_transfer_failure_streak": int(state.get("archive_transfer_failure_streak", 0)),
                         "pruned_reason": pruned_reason,
                     }
                 )
@@ -659,6 +686,8 @@ class GenerationRunner:
             "bundle_archive_underperform_roles": sorted(bundle_archive_underperform_roles),
             "bundle_archive_positive_lift_roles": sorted(bundle_archive_positive_lift_roles),
             "bundle_archive_value_deficit_roles": sorted(bundle_archive_value_deficit_roles),
+            "bundle_archive_transfer_success_roles": sorted(bundle_archive_transfer_success_roles),
+            "bundle_archive_transfer_failure_roles": sorted(bundle_archive_transfer_failure_roles),
             "bundle_archive_eviction_roles": sorted(bundle_archive_eviction_roles),
             "bundle_archive_repeat_eviction_roles": sorted(bundle_archive_repeat_eviction_roles),
             "bundle_archive_retired_roles": sorted(bundle_archive_retired_roles),
@@ -713,6 +742,7 @@ class GenerationRunner:
             if decision.bundle_signature is None:
                 continue
             decisions_by_bundle[(decision.role, decision.bundle_signature)].append(decision)
+        decisions_by_agent = {decision.agent_id: decision for decision in selection}
 
         updates_by_bundle: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
         for update in lineage_updates:
@@ -720,6 +750,30 @@ class GenerationRunner:
             if bundle_signature is None:
                 continue
             updates_by_bundle[(update["role"], bundle_signature)].append(update)
+        transfer_updates_by_source_bundle: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for update in lineage_updates:
+            source_bundle_signature = update.get("inheritance_source_bundle_signature")
+            if source_bundle_signature is None:
+                continue
+            decision = decisions_by_agent.get(update["agent_id"])
+            if decision is None:
+                continue
+            transfer_updates_by_source_bundle[(update["role"], source_bundle_signature)].append(
+                {
+                    "agent_id": update["agent_id"],
+                    "bundle_signature": update.get("bundle_signature"),
+                    "eligible": decision.eligible,
+                    "quarantine_status": decision.quarantine_status,
+                    "public_score": decision.public_score,
+                    "source_archive_admitted": bool(update.get("inheritance_source_archive_admitted", False)),
+                    "source_archive_value_qualified": bool(
+                        update.get("inheritance_source_archive_value_qualified", False)
+                    ),
+                    "source_archive_comparative_lift": float(
+                        update.get("inheritance_source_archive_comparative_lift", 0.0)
+                    ),
+                }
+            )
 
         role_incumbent_public_benchmark: dict[str, float] = {}
         incumbent_clean_scores_by_role: dict[str, list[float]] = defaultdict(list)
@@ -808,12 +862,95 @@ class GenerationRunner:
                 prior_archive_admitted = bool(prior_state.get("archive_admitted", False))
                 prior_archive_positive_lift_streak = int(prior_state.get("archive_positive_lift_streak", 0))
                 prior_archive_value_deficit_streak = int(prior_state.get("archive_value_deficit_streak", 0))
+                prior_archive_transfer_success_streak = int(prior_state.get("archive_transfer_success_streak", 0))
+                prior_archive_transfer_failure_streak = int(prior_state.get("archive_transfer_failure_streak", 0))
                 role_public_benchmark = role_survivor_public_benchmark.get(role, 0.0)
                 role_incumbent_benchmark = role_incumbent_public_benchmark.get(role, 0.0)
                 avg_public_score = round(
                     statistics.fmean([decision.public_score for decision in bundle_decisions]),
                     4,
                 ) if bundle_decisions else 0.0
+                transfer_updates = transfer_updates_by_source_bundle.get((role, bundle_signature), [])
+                archive_transfer_parent_comparative_lift = (
+                    round(
+                        statistics.fmean(
+                            [
+                                float(item["source_archive_comparative_lift"])
+                                for item in transfer_updates
+                                if item["source_archive_admitted"]
+                            ]
+                        ),
+                        4,
+                    )
+                    if any(item["source_archive_admitted"] for item in transfer_updates)
+                    else round(float(prior_state.get("archive_comparative_lift", 0.0)), 4)
+                )
+                archive_transfer_required = bool(
+                    transfer_updates
+                    and (
+                        bool(prior_state.get("archive_value_qualified", False))
+                        or archive_transfer_parent_comparative_lift >= BUNDLE_ARCHIVE_COMPARATIVE_LIFT_MIN
+                        or any(item["source_archive_value_qualified"] for item in transfer_updates)
+                    )
+                )
+                archive_transfer_child_lifts = [
+                    round(float(item["public_score"]) - role_incumbent_benchmark, 4)
+                    for item in transfer_updates
+                ] if role_incumbent_benchmark > 0 else []
+                archive_transfer_child_mean_lift = (
+                    round(statistics.fmean(archive_transfer_child_lifts), 4)
+                    if archive_transfer_child_lifts
+                    else 0.0
+                )
+                archive_transfer_success_count = sum(
+                    int(
+                        item["eligible"]
+                        and item["quarantine_status"] == QUARANTINE_CLEAN
+                        and role_incumbent_benchmark > 0
+                        and round(float(item["public_score"]) - role_incumbent_benchmark, 4)
+                        >= BUNDLE_ARCHIVE_COMPARATIVE_LIFT_MIN
+                    )
+                    for item in transfer_updates
+                )
+                archive_transfer_failure_count = (
+                    len(transfer_updates) - archive_transfer_success_count
+                    if archive_transfer_required
+                    else 0
+                )
+                archive_transfer_success_rate = (
+                    round(archive_transfer_success_count / len(transfer_updates), 4)
+                    if archive_transfer_required and transfer_updates
+                    else 0.0
+                )
+                archive_transfer_lift_retention = (
+                    round(archive_transfer_child_mean_lift - archive_transfer_parent_comparative_lift, 4)
+                    if archive_transfer_required and role_incumbent_benchmark > 0
+                    else 0.0
+                )
+                archive_transfer_success = bool(
+                    archive_transfer_required
+                    and transfer_updates
+                    and archive_transfer_success_count > 0
+                )
+                archive_transfer_failure = bool(
+                    archive_transfer_required
+                    and transfer_updates
+                    and not archive_transfer_success
+                )
+                archive_transfer_success_streak = (
+                    prior_archive_transfer_success_streak + 1
+                    if archive_transfer_success
+                    else 0
+                    if transfer_updates
+                    else prior_archive_transfer_success_streak
+                )
+                archive_transfer_failure_streak = (
+                    prior_archive_transfer_failure_streak + 1
+                    if archive_transfer_failure
+                    else 0
+                    if transfer_updates
+                    else prior_archive_transfer_failure_streak
+                )
                 archive_candidate = (
                     not prior_archive_retired
                     and (
@@ -919,6 +1056,12 @@ class GenerationRunner:
                     and archive_underperform_streak >= BUNDLE_ARCHIVE_UNDERPERFORM_EVICTION_STREAK
                 ):
                     archive_eviction_reason = "underperform"
+                elif (
+                    archive_admitted
+                    and archive_post_admission_grace_remaining == 0
+                    and archive_transfer_failure_streak > 0
+                ):
+                    archive_eviction_reason = "no_transfer_lift"
                 elif archive_admitted and archive_value_deficit_streak > 0:
                     archive_eviction_reason = "no_comparative_lift"
                 archive_evicted = archive_eviction_reason is not None
@@ -956,6 +1099,8 @@ class GenerationRunner:
                     archive_post_admission_grace_remaining = 0
                     archive_positive_lift_streak = 0
                     archive_value_deficit_streak = 0
+                    archive_transfer_success_streak = 0
+                    archive_transfer_failure_streak = 0
                 archive_reentry_backoff_remaining = (
                     0
                     if archive_retired
@@ -1062,6 +1207,16 @@ class GenerationRunner:
                     "archive_positive_lift_streak": archive_positive_lift_streak,
                     "archive_value_qualified": archive_value_qualified,
                     "archive_value_deficit_streak": archive_value_deficit_streak,
+                    "archive_transfer_required": archive_transfer_required,
+                    "archive_transfer_observed_count": len(transfer_updates),
+                    "archive_transfer_success_count": archive_transfer_success_count,
+                    "archive_transfer_failure_count": archive_transfer_failure_count,
+                    "archive_transfer_success_rate": archive_transfer_success_rate,
+                    "archive_transfer_parent_comparative_lift": archive_transfer_parent_comparative_lift,
+                    "archive_transfer_child_mean_lift": archive_transfer_child_mean_lift,
+                    "archive_transfer_lift_retention": archive_transfer_lift_retention,
+                    "archive_transfer_success_streak": archive_transfer_success_streak,
+                    "archive_transfer_failure_streak": archive_transfer_failure_streak,
                     "archive_evicted": archive_evicted,
                     "archive_eviction_reason": archive_eviction_reason,
                     "archive_eviction_count": archive_eviction_count,
@@ -1442,6 +1597,12 @@ class GenerationRunner:
             inherited_taboo_tags = sorted({*registry_taboo_tags, *parent_taboo_tags})
             parent_variant_id = None if parent_agent is None else parent_context["prompt_variant_by_agent"].get(parent_agent.agent_id)
             parent_package_policy_id = None if parent_agent is None else parent_context["package_policy_by_agent"].get(parent_agent.agent_id)
+            source_bundle_signature = None if parent_assignment is None else parent_assignment.get("bundle_signature")
+            source_bundle_state = (
+                {}
+                if source_bundle_signature is None
+                else parent_context.get("bundle_state_by_role", {}).get(role, {}).get(source_bundle_signature, {})
+            )
             if parent_agent is None:
                 variant = root_variant(role, role_ordinal)
                 package_policy_id = variant.default_package_policy
@@ -1564,10 +1725,26 @@ class GenerationRunner:
                     "parent_lineage_ids": parent_lineage_ids,
                     "inheritance_source_agent_id": None if parent_agent is None else parent_agent.agent_id,
                     "inheritance_source_generation_id": parent_context["previous_generation_id"],
-                    "inheritance_source_bundle_signature": None if parent_assignment is None else parent_assignment.get("bundle_signature"),
+                    "inheritance_source_bundle_signature": source_bundle_signature,
                     "inheritance_source_bundle_preserved": False if parent_assignment is None else parent_assignment.get("bundle_preserved", False),
                     "inheritance_source_bundle_reason": None if parent_assignment is None else parent_assignment.get("bundle_preservation_reason"),
                     "inheritance_source_selection_source": None if parent_assignment is None else parent_assignment.get("selection_source"),
+                    "inheritance_source_archive_admitted": bool(source_bundle_state.get("archive_admitted", False)),
+                    "inheritance_source_archive_value_qualified": bool(
+                        source_bundle_state.get("archive_value_qualified", False)
+                    ),
+                    "inheritance_source_archive_comparative_lift": round(
+                        float(source_bundle_state.get("archive_comparative_lift", 0.0)),
+                        4,
+                    ),
+                    "inheritance_source_archive_transfer_success_rate": round(
+                        float(source_bundle_state.get("archive_transfer_success_rate", 0.0)),
+                        4,
+                    ),
+                    "inheritance_source_archive_retired": bool(source_bundle_state.get("archive_retired", False)),
+                    "inheritance_source_archive_retirement_reason": source_bundle_state.get(
+                        "archive_retirement_reason"
+                    ),
                     "lineage_taboo_tags": parent_taboo_tags,
                     "registry_taboo_tags": registry_taboo_tags,
                     "inherited_artifact_ids": inherited.artifact_ids,
@@ -1850,6 +2027,8 @@ class GenerationRunner:
                 "archive_comparative_lift": state["archive_comparative_lift"],
                 "archive_positive_lift_streak": state["archive_positive_lift_streak"],
                 "archive_value_deficit_streak": state["archive_value_deficit_streak"],
+                "archive_transfer_success_rate": state["archive_transfer_success_rate"],
+                "archive_transfer_lift_retention": state["archive_transfer_lift_retention"],
                 "avg_public_score": state["avg_public_score"],
             }
             for role, role_states in bundle_state_by_role.items()
@@ -1865,6 +2044,7 @@ class GenerationRunner:
                 "archive_reentry_backoff_target": state["archive_reentry_backoff_target"],
                 "archive_reentry_attempt_count": state["archive_reentry_attempt_count"],
                 "archive_retired": state["archive_retired"],
+                "archive_retirement_reason": state["archive_retirement_reason"],
                 "avg_public_score": state["avg_public_score"],
             }
             for role, role_states in bundle_state_by_role.items()
@@ -1895,6 +2075,8 @@ class GenerationRunner:
                 "archive_value_deficit_streak": state["archive_value_deficit_streak"],
                 "archive_useful_clean_streak": state["archive_useful_clean_streak"],
                 "archive_retirement_credit": state["archive_retirement_credit"],
+                "archive_transfer_success_rate": state["archive_transfer_success_rate"],
+                "archive_transfer_lift_retention": state["archive_transfer_lift_retention"],
                 "avg_public_score": state["avg_public_score"],
             }
             for role, role_states in bundle_state_by_role.items()
@@ -1930,6 +2112,8 @@ class GenerationRunner:
                 "archive_retirement_reason": state["archive_retirement_reason"],
                 "archive_incumbent_public_benchmark": state["archive_incumbent_public_benchmark"],
                 "archive_comparative_lift": state["archive_comparative_lift"],
+                "archive_transfer_success_rate": state["archive_transfer_success_rate"],
+                "archive_transfer_lift_retention": state["archive_transfer_lift_retention"],
                 "avg_public_score": state["avg_public_score"],
             }
             for role, role_states in bundle_state_by_role.items()
@@ -1972,6 +2156,34 @@ class GenerationRunner:
                 and state["archive_incumbent_public_benchmark"] > 0
                 and state["archive_comparative_lift"] < BUNDLE_ARCHIVE_COMPARATIVE_LIFT_MIN
             )
+        ]
+        archive_transfer_bundles = [
+            {
+                "role": role,
+                "bundle_signature": bundle_signature,
+                "archive_transfer_parent_comparative_lift": state["archive_transfer_parent_comparative_lift"],
+                "archive_transfer_child_mean_lift": state["archive_transfer_child_mean_lift"],
+                "archive_transfer_lift_retention": state["archive_transfer_lift_retention"],
+                "archive_transfer_success_rate": state["archive_transfer_success_rate"],
+                "archive_transfer_observed_count": state["archive_transfer_observed_count"],
+                "archive_transfer_success_count": state["archive_transfer_success_count"],
+                "archive_transfer_failure_count": state["archive_transfer_failure_count"],
+                "archive_transfer_success_streak": state["archive_transfer_success_streak"],
+                "archive_transfer_failure_streak": state["archive_transfer_failure_streak"],
+            }
+            for role, role_states in bundle_state_by_role.items()
+            for bundle_signature, state in role_states.items()
+            if state["archive_transfer_required"] and state["archive_transfer_observed_count"] > 0
+        ]
+        archive_transfer_success_bundles = [
+            item
+            for item in archive_transfer_bundles
+            if item["archive_transfer_success_rate"] > 0.0
+        ]
+        archive_transfer_failure_bundles = [
+            item
+            for item in archive_transfer_bundles
+            if item["archive_transfer_success_rate"] == 0.0
         ]
         previous_proving_bundle_signatures = {
             (item["role"], item["bundle_signature"])
@@ -2075,6 +2287,10 @@ class GenerationRunner:
             float(item["archive_comparative_lift"])
             for item in archive_positive_lift_bundles + archive_value_deficit_bundles
         ]
+        archive_transfer_retention_values = [
+            float(item["archive_transfer_lift_retention"])
+            for item in archive_transfer_bundles
+        ]
         archive_retirement_reason_counts = dict(
             Counter(
                 str(item["archive_retirement_reason"])
@@ -2132,6 +2348,8 @@ class GenerationRunner:
             "bundle_archive_underperform_roles": parent_pool_summary["bundle_archive_underperform_roles"],
             "bundle_archive_positive_lift_roles": parent_pool_summary["bundle_archive_positive_lift_roles"],
             "bundle_archive_value_deficit_roles": parent_pool_summary["bundle_archive_value_deficit_roles"],
+            "bundle_archive_transfer_success_roles": parent_pool_summary["bundle_archive_transfer_success_roles"],
+            "bundle_archive_transfer_failure_roles": parent_pool_summary["bundle_archive_transfer_failure_roles"],
             "bundle_archive_eviction_roles": parent_pool_summary["bundle_archive_eviction_roles"],
             "bundle_archive_repeat_eviction_roles": parent_pool_summary["bundle_archive_repeat_eviction_roles"],
             "bundle_archive_retired_roles": parent_pool_summary["bundle_archive_retired_roles"],
@@ -2194,6 +2412,19 @@ class GenerationRunner:
             "archive_mean_comparative_lift": (
                 round(statistics.fmean(archive_comparative_lift_values), 4)
                 if archive_comparative_lift_values
+                else 0.0
+            ),
+            "archive_transfer_bundles": archive_transfer_bundles,
+            "archive_transfer_success_count": len(archive_transfer_success_bundles),
+            "archive_transfer_failure_count": len(archive_transfer_failure_bundles),
+            "archive_transfer_success_rate": (
+                round(len(archive_transfer_success_bundles) / len(archive_transfer_bundles), 4)
+                if archive_transfer_bundles
+                else 0.0
+            ),
+            "archive_parent_vs_child_lift_retention": (
+                round(statistics.fmean(archive_transfer_retention_values), 4)
+                if archive_transfer_retention_values
                 else 0.0
             ),
             "archive_admitted_bundles": archive_admitted_bundles,
@@ -2324,6 +2555,8 @@ class GenerationRunner:
                 f"- bundle_archive_underperform_roles: {', '.join(summary['selection_summary'].get('bundle_archive_underperform_roles', [])) or 'none'}",
                 f"- bundle_archive_positive_lift_roles: {', '.join(summary['selection_summary'].get('bundle_archive_positive_lift_roles', [])) or 'none'}",
                 f"- bundle_archive_value_deficit_roles: {', '.join(summary['selection_summary'].get('bundle_archive_value_deficit_roles', [])) or 'none'}",
+                f"- bundle_archive_transfer_success_roles: {', '.join(summary['selection_summary'].get('bundle_archive_transfer_success_roles', [])) or 'none'}",
+                f"- bundle_archive_transfer_failure_roles: {', '.join(summary['selection_summary'].get('bundle_archive_transfer_failure_roles', [])) or 'none'}",
                 f"- bundle_archive_eviction_roles: {', '.join(summary['selection_summary'].get('bundle_archive_eviction_roles', [])) or 'none'}",
                 f"- bundle_archive_repeat_eviction_roles: {', '.join(summary['selection_summary'].get('bundle_archive_repeat_eviction_roles', [])) or 'none'}",
                 f"- bundle_archive_retired_roles: {', '.join(summary['selection_summary'].get('bundle_archive_retired_roles', [])) or 'none'}",
@@ -2346,6 +2579,10 @@ class GenerationRunner:
                 f"- archive_incumbent_win_count: {summary['selection_summary'].get('archive_incumbent_win_count', 0)}",
                 f"- archive_incumbent_loss_count: {summary['selection_summary'].get('archive_incumbent_loss_count', 0)}",
                 f"- archive_mean_comparative_lift: {summary['selection_summary'].get('archive_mean_comparative_lift', 0.0)}",
+                f"- archive_transfer_success_count: {summary['selection_summary'].get('archive_transfer_success_count', 0)}",
+                f"- archive_transfer_failure_count: {summary['selection_summary'].get('archive_transfer_failure_count', 0)}",
+                f"- archive_transfer_success_rate: {summary['selection_summary'].get('archive_transfer_success_rate', 0.0)}",
+                f"- archive_parent_vs_child_lift_retention: {summary['selection_summary'].get('archive_parent_vs_child_lift_retention', 0.0)}",
                 f"- archive_admitted_count: {summary['selection_summary'].get('archive_admitted_count', 0)}",
                 f"- newly_admitted_count: {summary['selection_summary'].get('newly_admitted_count', 0)}",
                 f"- post_admission_grace_count: {summary['selection_summary'].get('post_admission_grace_count', 0)}",
@@ -2422,6 +2659,14 @@ class GenerationRunner:
             lines.append(f"- archive_coexistence_budget_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_underperform_roles", []):
             lines.append(f"- archive_underperform_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_positive_lift_roles", []):
+            lines.append(f"- archive_positive_lift_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_value_deficit_roles", []):
+            lines.append(f"- archive_value_deficit_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_transfer_success_roles", []):
+            lines.append(f"- archive_transfer_success_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_transfer_failure_roles", []):
+            lines.append(f"- archive_transfer_failure_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_eviction_roles", []):
             lines.append(f"- archive_eviction_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_repeat_eviction_roles", []):
@@ -2491,6 +2736,17 @@ class GenerationRunner:
                 f"grace_remaining={item.get('archive_post_admission_grace_remaining', 0)} "
                 f"avg_public_score={item.get('avg_public_score', 0.0)}"
             )
+        for item in summary["selection_summary"].get("archive_transfer_bundles", []):
+            lines.append(
+                f"- transfer:{item['role']}:{item['bundle_signature']} "
+                f"parent_lift={item.get('archive_transfer_parent_comparative_lift', 0.0)} "
+                f"child_lift={item.get('archive_transfer_child_mean_lift', 0.0)} "
+                f"retention={item.get('archive_transfer_lift_retention', 0.0)} "
+                f"success_rate={item.get('archive_transfer_success_rate', 0.0)} "
+                f"observed={item.get('archive_transfer_observed_count', 0)} "
+                f"successes={item.get('archive_transfer_success_count', 0)} "
+                f"failures={item.get('archive_transfer_failure_count', 0)}"
+            )
         for item in summary["selection_summary"].get("archive_evicted_bundles", []):
             lines.append(
                 f"- evicted:{item['role']}:{item['bundle_signature']} "
@@ -2543,6 +2799,8 @@ class GenerationRunner:
                 f"converted={str(item.get('archive_admission_converted', False)).lower()} "
                 f"useful_streak={item.get('archive_useful_clean_streak', 0)} "
                 f"retirement_credit={item.get('archive_retirement_credit', 0)} "
+                f"transfer_success_rate={item.get('archive_transfer_success_rate', 0.0)} "
+                f"transfer_retention={item.get('archive_transfer_lift_retention', 0.0)} "
                 f"avg_public_score={item.get('avg_public_score', 0.0)}"
             )
         for item in summary["selection_summary"].get("archive_reentry_converted_bundles", []):
