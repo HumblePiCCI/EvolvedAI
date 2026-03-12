@@ -71,6 +71,53 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 )
         lines.append("")
 
+    summary = generation.summary_json
+    selection = summary.get("selection_outcome", [])
+    if selection:
+        lines.append("Selection")
+        for item in selection:
+            lines.append(
+                f"  {item['lineage_id']} ({item['role']}) eligible={item['eligible']} "
+                f"blocked={item['propagation_blocked']} status={item['quarantine_status']} "
+                f"score={item['score']} reasons={','.join(item['reasons']) or 'none'}"
+            )
+        lines.append("")
+
+    quarantine_report = summary.get("quarantine_report", [])
+    if quarantine_report:
+        lines.append("Quarantine")
+        for item in quarantine_report:
+            lines.append(
+                f"  {item['lineage_id']} ({item['role']}) status={item['quarantine_status']} "
+                f"artifacts={','.join(item['artifact_ids']) or 'none'} reasons={','.join(item['reasons']) or 'none'}"
+            )
+        lines.append("")
+
+    lineage_updates = summary.get("lineage_updates", [])
+    if lineage_updates:
+        lines.append("Lineages")
+        for item in lineage_updates:
+            lines.append(
+                f"  {item['lineage_id']} role={item['role']} parents={','.join(item['parent_lineage_ids']) or 'root'} "
+                f"source_agent={item['inheritance_source_agent_id'] or 'none'} "
+                f"inherited_artifacts={len(item['inherited_artifact_ids'])} "
+                f"inherited_memorials={len(item['inherited_memorial_ids'])} "
+                f"taboo_tags={','.join(item['taboo_tags']) or 'none'}"
+            )
+        lines.append("")
+
+    drift = summary.get("drift", {})
+    if drift:
+        lines.append("Drift")
+        lines.append(
+            f"  strategy={drift.get('strategy_drift_rate')} diffusion={drift.get('lineage_diffusion_index')} "
+            f"taboo={drift.get('taboo_rederivation_score')} memorial={drift.get('memorial_transfer_score')} "
+            f"coordination={drift.get('coordination_anomaly_score')}"
+        )
+        for note in drift.get("notes", []):
+            lines.append(f"  note={note}")
+        lines.append("")
+
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -87,6 +134,21 @@ def render_lifespan_timeline(storage: StorageManager, generation_id: int, agent_
     ]
     logs = storage.read_agent_log(generation_id, agent_id)
     evals = [record for record in storage.list_generation_evals(generation_id) if record.agent_id == agent_id]
+    memorial = next(
+        (record for record in storage.list_generation_memorials(generation_id) if record.source_agent_id == agent_id),
+        None,
+    )
+    generation = storage.get_generation(generation_id)
+    selection = None
+    if generation is not None:
+        selection = next(
+            (
+                item
+                for item in generation.summary_json.get("selection_outcome", [])
+                if item.get("agent_id") == agent_id
+            ),
+            None,
+        )
 
     lines = [
         f"Lifespan {agent_id}",
@@ -117,5 +179,23 @@ def render_lifespan_timeline(storage: StorageManager, generation_id: int, agent_
             lines.append(
                 f"  {record.eval_family}/{record.eval_name}: score={record.score} pass_fail={record.pass_fail}"
             )
+    if selection is not None:
+        lines.extend(
+            [
+                "",
+                "selection:",
+                f"  eligible={selection['eligible']} blocked={selection['propagation_blocked']} "
+                f"status={selection['quarantine_status']} reasons={','.join(selection['reasons']) or 'none'}",
+            ]
+        )
+    if memorial is not None:
+        lines.extend(
+            [
+                "",
+                "memorial:",
+                f"  classification={memorial.classification} failure_mode={memorial.failure_mode or 'none'}",
+                f"  lesson={memorial.lesson_distillate}",
+            ]
+        )
 
     return "\n".join(lines).rstrip() + "\n"

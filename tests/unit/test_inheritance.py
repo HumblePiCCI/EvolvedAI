@@ -44,3 +44,13 @@ def test_inheritance_filters_quarantined_items() -> None:
     assert package.artifact_ids == ["art-clean"]
     assert package.memorial_ids == ["mem-clean"]
 
+
+def test_inheritance_keeps_global_taboo_registry_tags() -> None:
+    package = assemble_inheritance_package(
+        artifacts=[],
+        memorials=[],
+        artifact_limit=2,
+        memorial_limit=2,
+        extra_taboo_tags=["anti_corruption", "taboo_recurrence"],
+    )
+    assert package.taboo_tags == ["anti_corruption", "taboo_recurrence"]
