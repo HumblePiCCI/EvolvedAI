@@ -653,6 +653,7 @@ def test_parent_pool_does_not_reserve_archive_admission_pending_bundle() -> None
             "citizen:synthesis_split:taboo_first": {
                 "archive_candidate_generations": 1,
                 "archive_admission_pending_generations": 1,
+                "archive_proving_streak": 1,
                 "archive_admitted": False,
                 "archive_decay_generations": 0,
                 "archive_decay_debt": 0,
