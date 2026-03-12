@@ -292,6 +292,22 @@ def _bundle_archive_value_deficit(state: Mapping[str, Any]) -> bool:
     )
 
 
+def _bundle_archive_transfer_success_rate(state: Mapping[str, Any]) -> float:
+    return float(state.get("archive_transfer_success_rate", 0.0))
+
+
+def _bundle_archive_transfer_lift_retention(state: Mapping[str, Any]) -> float:
+    return float(state.get("archive_transfer_lift_retention", 0.0))
+
+
+def _bundle_archive_transfer_deficit(state: Mapping[str, Any]) -> bool:
+    return bool(
+        bool(state.get("archive_transfer_required", False))
+        and int(state.get("archive_transfer_observed_count", 0)) > 0
+        and _bundle_archive_transfer_success_rate(state) == 0.0
+    )
+
+
 def _bundle_is_archive_admitted(state: Mapping[str, Any]) -> bool:
     return bool(state.get("archive_admitted", False))
 
@@ -443,7 +459,7 @@ def _bundle_retention_key(
     candidate: Mapping[str, Any],
     bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None,
     by_bundle: Mapping[str, Sequence[Mapping[str, Any]]],
-) -> tuple[int, int, int, int, int, int, int, int, int, int, int, float, float, float, int]:
+) -> tuple[Any, ...]:
     state = _bundle_state(bundle_id, bundle_state_by_signature)
     decision = candidate["decision"]
     return (
@@ -451,13 +467,17 @@ def _bundle_retention_key(
         _bundle_archive_repeat_eviction_tier(state),
         int(_bundle_archive_admission_probation(state)),
         int(_bundle_archive_reentry_backoff_active(state)),
+        int(_bundle_archive_transfer_deficit(state)),
         int(_bundle_archive_underperforming(state)),
         int(_bundle_archive_value_deficit(state)),
         int(state.get("stale_generations", 0)),
         int(state.get("archive_decay_generations", 0)),
         _bundle_decay_debt(state),
         -int(state.get("clean_win_generations", 0)),
+        -int(state.get("archive_transfer_success_streak", 0)),
         -int(state.get("archive_positive_lift_streak", 0)),
+        -_bundle_archive_transfer_success_rate(state),
+        -_bundle_archive_transfer_lift_retention(state),
         -_bundle_archive_comparative_lift(state),
         -float(state.get("avg_score", decision.score)),
         -decision.diversity_bonus,
@@ -521,6 +541,7 @@ def _bundle_balanced_selection(
             and _bundle_archive_repeat_eviction_tier(_bundle_state(bundle_id, bundle_state_by_signature)) == 0
             and not _bundle_archive_admission_probation(_bundle_state(bundle_id, bundle_state_by_signature))
             and not _bundle_archive_reentry_backoff_active(_bundle_state(bundle_id, bundle_state_by_signature))
+            and not _bundle_archive_transfer_deficit(_bundle_state(bundle_id, bundle_state_by_signature))
             and not _bundle_archive_underperforming(_bundle_state(bundle_id, bundle_state_by_signature))
             and not _bundle_archive_value_deficit(_bundle_state(bundle_id, bundle_state_by_signature))
         )
@@ -559,13 +580,17 @@ def _bundle_balanced_selection(
                 int(_bundle_archive_retired(_bundle_state(candidate[0], bundle_state_by_signature))),
                 _bundle_archive_repeat_eviction_tier(_bundle_state(candidate[0], bundle_state_by_signature)),
                 int(_bundle_archive_reentry_backoff_active(_bundle_state(candidate[0], bundle_state_by_signature))),
+                int(_bundle_archive_transfer_deficit(_bundle_state(candidate[0], bundle_state_by_signature))),
                 int(_bundle_archive_underperforming(_bundle_state(candidate[0], bundle_state_by_signature))),
                 int(_bundle_archive_value_deficit(_bundle_state(candidate[0], bundle_state_by_signature))),
                 _bundle_state(candidate[0], bundle_state_by_signature).get("stale_generations", 0),
                 _bundle_state(candidate[0], bundle_state_by_signature).get("archive_decay_generations", 0),
                 _bundle_decay_debt(_bundle_state(candidate[0], bundle_state_by_signature)),
                 len(by_bundle[candidate[0]]),
+                -int(_bundle_state(candidate[0], bundle_state_by_signature).get("archive_transfer_success_streak", 0)),
                 -int(_bundle_state(candidate[0], bundle_state_by_signature).get("archive_positive_lift_streak", 0)),
+                -_bundle_archive_transfer_success_rate(_bundle_state(candidate[0], bundle_state_by_signature)),
+                -_bundle_archive_transfer_lift_retention(_bundle_state(candidate[0], bundle_state_by_signature)),
                 -_bundle_archive_comparative_lift(_bundle_state(candidate[0], bundle_state_by_signature)),
                 -candidate[1]["decision"].diversity_bonus,
                 -candidate[1]["decision"].score,
@@ -584,9 +609,7 @@ def _bundle_balanced_selection(
             bundle_slots[bundle_id] += 1
 
     while len(selected) < slot_count:
-        candidate_options: list[
-            tuple[tuple[int, int, int, int, int, int, int, int, int, int, int, float, float, float, int], str, dict[str, Any]]
-        ] = []
+        candidate_options: list[tuple[tuple[Any, ...], str, dict[str, Any]]] = []
         for bundle_id, items in by_bundle.items():
             if reserve_penalty_slots > 0 and bundle_slots[bundle_id] == 0:
                 continue
@@ -601,12 +624,16 @@ def _bundle_balanced_selection(
                         _bundle_archive_repeat_eviction_tier(state),
                         int(_bundle_archive_admission_probation(state)),
                         int(_bundle_archive_reentry_backoff_active(state)),
+                        int(_bundle_archive_transfer_deficit(state)),
                         int(_bundle_archive_underperforming(state)),
                         int(_bundle_archive_value_deficit(state)),
                         int(state.get("archive_decay_generations", 0)),
                         _bundle_decay_debt(state),
                         0,
+                        -int(state.get("archive_transfer_success_streak", 0)),
                         -int(state.get("archive_positive_lift_streak", 0)),
+                        -_bundle_archive_transfer_success_rate(state),
+                        -_bundle_archive_transfer_lift_retention(state),
                         -_bundle_archive_comparative_lift(state),
                         -decision.score,
                         -decision.diversity_bonus,
@@ -629,12 +656,16 @@ def _bundle_balanced_selection(
                             _bundle_archive_repeat_eviction_tier(state),
                             int(_bundle_archive_admission_probation(state)),
                             int(_bundle_archive_reentry_backoff_active(state)),
+                            int(_bundle_archive_transfer_deficit(state)),
                             int(_bundle_archive_underperforming(state)),
                             int(_bundle_archive_value_deficit(state)),
                             int(state.get("archive_decay_generations", 0)),
                             _bundle_decay_debt(state),
                             0,
+                            -int(state.get("archive_transfer_success_streak", 0)),
                             -int(state.get("archive_positive_lift_streak", 0)),
+                            -_bundle_archive_transfer_success_rate(state),
+                            -_bundle_archive_transfer_lift_retention(state),
                             -_bundle_archive_comparative_lift(state),
                             -decision.score,
                             -decision.diversity_bonus,

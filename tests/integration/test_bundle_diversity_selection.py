@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from society.analysis import build_experiment_report
 from society.config import AutoCivConfig
@@ -79,6 +80,8 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert any(metric["archive_value_deficit_count"] > 0 for metric in post_root)
         assert any(metric["archive_incumbent_loss_count"] > 0 for metric in post_root)
         assert any(metric["archive_mean_comparative_lift"] != 0.0 for metric in post_root)
+        assert any(metric["archive_transfer_failure_count"] > 0 for metric in post_root)
+        assert any(metric["archive_parent_vs_child_lift_retention"] != 0.0 for metric in post_root)
         assert any(metric["archive_eviction_count"] > 0 for metric in post_root)
         assert any(metric["repeat_eviction_count"] > 0 for metric in post_root)
         assert any(metric["archive_repeat_eviction_max_tier"] >= 2 for metric in post_root)
@@ -96,6 +99,7 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert any(metric["bundle_archive_coexistence_budget_roles"] for metric in post_root)
         assert any(metric["bundle_archive_positive_lift_roles"] for metric in post_root)
         assert any(metric["bundle_archive_value_deficit_roles"] for metric in post_root)
+        assert any(metric["bundle_archive_transfer_failure_roles"] for metric in post_root)
         assert any(metric["bundle_archive_eviction_roles"] for metric in post_root)
         assert any(metric["bundle_archive_repeat_eviction_roles"] for metric in post_root)
         assert any(metric["bundle_archive_retired_roles"] for metric in post_root)
@@ -145,7 +149,10 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert repeat_eviction_generation["archive_eviction_count"] > 0
         assert repeat_eviction_generation["archive_repeat_eviction_max_tier"] >= 2
         assert repeat_eviction_generation["archive_retired_count"] > 0
-        assert repeat_eviction_generation["archive_retirement_reason_counts"].get("no_comparative_lift", 0) >= 1
+        assert any(
+            repeat_eviction_generation["archive_retirement_reason_counts"].get(reason, 0) >= 1
+            for reason in {"no_transfer_lift", "no_comparative_lift"}
+        )
         assert repeat_eviction_generation["bundle_archive_retired_roles"]
         assert repeat_eviction_generation["largest_bundle_share"] < 0.5
         retired_generation_index = next(
@@ -177,6 +184,10 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert "archive_incumbent_win_count" in latest_summary["selection_summary"]
         assert "archive_incumbent_loss_count" in latest_summary["selection_summary"]
         assert "archive_mean_comparative_lift" in latest_summary["selection_summary"]
+        assert "archive_transfer_success_count" in latest_summary["selection_summary"]
+        assert "archive_transfer_failure_count" in latest_summary["selection_summary"]
+        assert "archive_transfer_success_rate" in latest_summary["selection_summary"]
+        assert "archive_parent_vs_child_lift_retention" in latest_summary["selection_summary"]
         assert "archive_admitted_count" in latest_summary["selection_summary"]
         assert "newly_admitted_count" in latest_summary["selection_summary"]
         assert "post_admission_grace_count" in latest_summary["selection_summary"]
@@ -200,6 +211,8 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert "bundle_archive_underperform_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_positive_lift_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_value_deficit_roles" in latest_summary["selection_summary"]
+        assert "bundle_archive_transfer_success_roles" in latest_summary["selection_summary"]
+        assert "bundle_archive_transfer_failure_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_eviction_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_repeat_eviction_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_retired_roles" in latest_summary["selection_summary"]
@@ -221,7 +234,7 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         storage.close()
 
 
-def test_archive_value_benchmark_retires_zero_lift_bundle_but_keeps_positive_lift_bundle(tmp_path: Path) -> None:
+def test_archive_transfer_benchmark_retires_zero_transfer_bundle_but_keeps_positive_transfer_bundle(tmp_path: Path) -> None:
     config = _bundle_diversity_config(tmp_path)
     storage = StorageManager(root_dir=config.storage.root_dir, db_path=config.storage.db_path)
     provider = build_provider(config.provider.name, config.provider.model)
@@ -256,6 +269,10 @@ def test_archive_value_benchmark_retires_zero_lift_bundle_but_keeps_positive_lif
                                     "archive_repeat_eviction_tier": 1,
                                     "archive_positive_lift_streak": 0,
                                     "archive_value_deficit_streak": 0,
+                                    "archive_value_qualified": True,
+                                    "archive_comparative_lift": 0.03,
+                                    "archive_transfer_success_streak": 0,
+                                    "archive_transfer_failure_streak": 0,
                                     "archive_retired": False,
                                     "archive_retirement_reason": None,
                                     "archive_last_eviction_generation_id": 0,
@@ -274,6 +291,10 @@ def test_archive_value_benchmark_retires_zero_lift_bundle_but_keeps_positive_lif
                                     "archive_repeat_eviction_tier": 1,
                                     "archive_positive_lift_streak": 1,
                                     "archive_value_deficit_streak": 0,
+                                    "archive_value_qualified": True,
+                                    "archive_comparative_lift": 0.03,
+                                    "archive_transfer_success_streak": 0,
+                                    "archive_transfer_failure_streak": 0,
                                     "archive_retired": False,
                                     "archive_retirement_reason": None,
                                     "archive_last_eviction_generation_id": 0,
@@ -297,13 +318,17 @@ def test_archive_value_benchmark_retires_zero_lift_bundle_but_keeps_positive_lif
             )
         )
 
-        lineage_updates = [
+        lineage_updates: list[dict[str, Any]] = [
             {
                 "agent_id": "agent-0002-000",
                 "lineage_id": "lin-0002-000",
                 "role": "citizen",
                 "bundle_signature": "citizen:archive_flat:artifact_first",
                 "variant_origin": "inherited",
+                "inheritance_source_bundle_signature": "citizen:archive_flat:artifact_first",
+                "inheritance_source_archive_admitted": True,
+                "inheritance_source_archive_value_qualified": True,
+                "inheritance_source_archive_comparative_lift": 0.03,
             },
             {
                 "agent_id": "agent-0002-001",
@@ -311,6 +336,10 @@ def test_archive_value_benchmark_retires_zero_lift_bundle_but_keeps_positive_lif
                 "role": "citizen",
                 "bundle_signature": "citizen:archive_lifted:taboo_first",
                 "variant_origin": "inherited",
+                "inheritance_source_bundle_signature": "citizen:archive_lifted:taboo_first",
+                "inheritance_source_archive_admitted": True,
+                "inheritance_source_archive_value_qualified": True,
+                "inheritance_source_archive_comparative_lift": 0.03,
             },
             {
                 "agent_id": "agent-0002-002",
@@ -318,6 +347,7 @@ def test_archive_value_benchmark_retires_zero_lift_bundle_but_keeps_positive_lif
                 "role": "citizen",
                 "bundle_signature": "citizen:baseline:balanced",
                 "variant_origin": "inherited",
+                "inheritance_source_bundle_signature": "citizen:baseline:balanced",
             },
             {
                 "agent_id": "agent-0002-003",
@@ -325,6 +355,7 @@ def test_archive_value_benchmark_retires_zero_lift_bundle_but_keeps_positive_lif
                 "role": "citizen",
                 "bundle_signature": "citizen:citation_strict:artifact_first",
                 "variant_origin": "inherited",
+                "inheritance_source_bundle_signature": "citizen:citation_strict:artifact_first",
             },
         ]
         selection = [
@@ -408,13 +439,18 @@ def test_archive_value_benchmark_retires_zero_lift_bundle_but_keeps_positive_lif
         positive_lift_state = bundle_state_by_role["citizen"]["citizen:archive_lifted:taboo_first"]
 
         assert no_lift_state["archive_retired"] is True
-        assert no_lift_state["archive_retirement_reason"] == "no_comparative_lift"
+        assert no_lift_state["archive_retirement_reason"] == "no_transfer_lift"
         assert no_lift_state["archive_comparative_lift"] == 0.0
         assert no_lift_state["archive_positive_lift_streak"] == 0
+        assert no_lift_state["archive_transfer_observed_count"] == 1
+        assert no_lift_state["archive_transfer_success_rate"] == 0.0
         assert positive_lift_state["archive_admitted"] is True
         assert positive_lift_state["archive_retired"] is False
         assert positive_lift_state["archive_comparative_lift"] > 0.0
         assert positive_lift_state["archive_positive_lift_streak"] >= 2
         assert positive_lift_state["archive_value_qualified"] is True
+        assert positive_lift_state["archive_transfer_observed_count"] == 1
+        assert positive_lift_state["archive_transfer_success_rate"] > 0.0
+        assert positive_lift_state["archive_transfer_lift_retention"] >= 0.0
     finally:
         storage.close()
