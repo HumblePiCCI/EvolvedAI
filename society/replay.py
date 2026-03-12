@@ -149,6 +149,8 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             lines.append(f"  archive_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_pending_roles", []):
             lines.append(f"  archive_pending_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_proving_roles", []):
+            lines.append(f"  archive_proving_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_cooldown_roles", []):
             lines.append(f"  archive_cooldown_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_decay_prune_roles", []):
@@ -158,7 +160,18 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             f"{summary.get('selection_summary', {}).get('archive_admission_pending_count', 0)}"
         )
         lines.append(
+            f"  archive_proving_count:{summary.get('selection_summary', {}).get('archive_proving_count', 0)}"
+        )
+        lines.append(
             f"  archive_admitted_count:{summary.get('selection_summary', {}).get('archive_admitted_count', 0)}"
+        )
+        lines.append(
+            "  archive_admission_conversion_rate:"
+            f"{summary.get('selection_summary', {}).get('archive_admission_conversion_rate', 0.0)}"
+        )
+        lines.append(
+            "  archive_failed_admission_count:"
+            f"{summary.get('selection_summary', {}).get('archive_failed_admission_count', 0)}"
         )
         lines.append(
             f"  archive_cooldown_count:{summary.get('selection_summary', {}).get('bundle_archive_cooldown_count', 0)}"
@@ -195,6 +208,16 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f"{item['role']}:{item['bundle_signature']}"
                 f" candidate_generations={item['archive_candidate_generations']}"
                 f" pending_generations={item['archive_admission_pending_generations']}"
+                f" proving_streak={item.get('archive_proving_streak', 0)}"
+                f" avg_public_score={item.get('avg_public_score', 0.0)}"
+            )
+        for item in summary.get("selection_summary", {}).get("archive_proving_bundles", []):
+            lines.append(
+                "  admission_proving:"
+                f"{item['role']}:{item['bundle_signature']}"
+                f" candidate_generations={item['archive_candidate_generations']}"
+                f" pending_generations={item['archive_admission_pending_generations']}"
+                f" proving_streak={item.get('archive_proving_streak', 0)}"
                 f" avg_public_score={item.get('avg_public_score', 0.0)}"
             )
         for item in summary.get("selection_summary", {}).get("archive_admitted_bundles", []):
@@ -203,6 +226,8 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f"{item['role']}:{item['bundle_signature']}"
                 f" archive_generations={item['archive_generations']}"
                 f" candidate_generations={item['archive_candidate_generations']}"
+                f" proving_streak={item.get('archive_proving_streak', 0)}"
+                f" converted={str(item.get('archive_admission_converted', False)).lower()}"
                 f" useful_streak={item.get('archive_useful_clean_streak', 0)}"
                 f" retirement_credit={item.get('archive_retirement_credit', 0)}"
                 f" avg_public_score={item.get('avg_public_score', 0.0)}"
@@ -215,6 +240,7 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f" retention_debt={item['retention_debt']}"
                 f" candidate_generations={item.get('archive_candidate_generations', 0)}"
                 f" pending_generations={item.get('archive_admission_pending_generations', 0)}"
+                f" proving_streak={item.get('archive_proving_streak', 0)}"
                 f" archive_decay_debt={item['archive_decay_debt']}"
                 f" archive_decay_generations={item.get('archive_decay_generations', 0)}"
                 f" useful_streak={item.get('archive_useful_clean_streak', 0)}"
@@ -238,6 +264,7 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f" retention_debt={item.get('retention_debt', 0)}"
                 f" candidate_generations={item.get('archive_candidate_generations', 0)}"
                 f" pending_generations={item.get('archive_admission_pending_generations', 0)}"
+                f" proving_streak={item.get('archive_proving_streak', 0)}"
                 f" archive_decay_debt={item.get('archive_decay_debt', 0)}"
                 f" archive_decay_generations={item.get('archive_decay_generations', 0)}"
                 f" useful_streak={item.get('archive_useful_clean_streak', 0)}"

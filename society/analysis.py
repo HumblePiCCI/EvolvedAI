@@ -452,10 +452,14 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 "bundle_archive_candidate_roles": selection_summary.get("bundle_archive_candidate_roles", []),
                 "bundle_archive_roles": selection_summary.get("bundle_archive_roles", []),
                 "bundle_archive_pending_roles": selection_summary.get("bundle_archive_pending_roles", []),
+                "bundle_archive_proving_roles": selection_summary.get("bundle_archive_proving_roles", []),
                 "bundle_archive_cooldown_roles": selection_summary.get("bundle_archive_cooldown_roles", []),
                 "bundle_archive_cooldown_count": selection_summary.get("bundle_archive_cooldown_count", 0),
                 "archive_admission_pending_count": selection_summary.get("archive_admission_pending_count", 0),
+                "archive_proving_count": selection_summary.get("archive_proving_count", 0),
                 "archive_admitted_count": selection_summary.get("archive_admitted_count", 0),
+                "archive_admission_conversion_rate": selection_summary.get("archive_admission_conversion_rate", 0.0),
+                "archive_failed_admission_count": selection_summary.get("archive_failed_admission_count", 0),
                 "bundle_decay_prune_roles": selection_summary.get("bundle_decay_prune_roles", []),
                 "bundle_decay_prune_count": selection_summary.get("bundle_decay_prune_count", 0),
                 "stale_bundle_count": selection_summary.get("stale_bundle_count", 0),
@@ -530,7 +534,13 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         archive_admission_pending_delta = (
             last["archive_admission_pending_count"] - first["archive_admission_pending_count"]
         )
+        archive_proving_delta = last["archive_proving_count"] - first["archive_proving_count"]
         archive_admitted_delta = last["archive_admitted_count"] - first["archive_admitted_count"]
+        archive_conversion_delta = round(
+            last["archive_admission_conversion_rate"] - first["archive_admission_conversion_rate"],
+            4,
+        )
+        archive_failed_delta = last["archive_failed_admission_count"] - first["archive_failed_admission_count"]
         bundle_archive_cooldown_delta = (
             last["bundle_archive_cooldown_count"] - first["bundle_archive_cooldown_count"]
         )
@@ -600,12 +610,30 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             )
         else:
             notes.append("Archive admission probation stayed flat across the batch.")
+        if archive_proving_delta > 0:
+            notes.append(f"Archive proving pressure increased by {archive_proving_delta} bundles across the batch.")
+        elif archive_proving_delta < 0:
+            notes.append(f"Archive proving pressure fell by {-archive_proving_delta} bundles across the batch.")
+        else:
+            notes.append("Archive proving pressure stayed flat across the batch.")
         if archive_admitted_delta > 0:
             notes.append(f"Archive admissions increased by {archive_admitted_delta} bundles across the batch.")
         elif archive_admitted_delta < 0:
             notes.append(f"Archive admissions fell by {-archive_admitted_delta} bundles across the batch.")
         else:
             notes.append("Archive admissions stayed flat across the batch.")
+        if archive_conversion_delta > 0:
+            notes.append(f"Archive admission conversion rate increased by {archive_conversion_delta} across the batch.")
+        elif archive_conversion_delta < 0:
+            notes.append(f"Archive admission conversion rate fell by {-archive_conversion_delta} across the batch.")
+        else:
+            notes.append("Archive admission conversion rate stayed flat across the batch.")
+        if archive_failed_delta > 0:
+            notes.append(f"Failed archive admissions increased by {archive_failed_delta} across the batch.")
+        elif archive_failed_delta < 0:
+            notes.append(f"Failed archive admissions fell by {-archive_failed_delta} across the batch.")
+        else:
+            notes.append("Failed archive admissions stayed flat across the batch.")
         if bundle_archive_cooldown_delta > 0:
             notes.append(f"Archive cooldown blocked {bundle_archive_cooldown_delta} more roles by the end of the batch.")
         elif bundle_archive_cooldown_delta < 0:
@@ -701,7 +729,10 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"preserved_bundle_count={metric['preserved_bundle_count']} "
             f"bundle_archive_count={metric['bundle_archive_count']} "
             f"archive_admission_pending_count={metric['archive_admission_pending_count']} "
+            f"archive_proving_count={metric['archive_proving_count']} "
             f"archive_admitted_count={metric['archive_admitted_count']} "
+            f"archive_admission_conversion_rate={metric['archive_admission_conversion_rate']} "
+            f"archive_failed_admission_count={metric['archive_failed_admission_count']} "
             f"bundle_archive_cooldown_count={metric['bundle_archive_cooldown_count']} "
             f"bundle_decay_prune_count={metric['bundle_decay_prune_count']} "
             f"stale_bundle_count={metric['stale_bundle_count']} "
@@ -725,6 +756,10 @@ def render_experiment_report(report: dict[str, Any]) -> str:
         if metric["bundle_archive_pending_roles"]:
             lines.append(
                 f"  bundle_archive_pending_roles={','.join(metric['bundle_archive_pending_roles'])}"
+            )
+        if metric["bundle_archive_proving_roles"]:
+            lines.append(
+                f"  bundle_archive_proving_roles={','.join(metric['bundle_archive_proving_roles'])}"
             )
         if metric["bundle_archive_cooldown_roles"]:
             lines.append(
