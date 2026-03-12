@@ -18,7 +18,7 @@ from society.constants import (
     TABOO_REGISTRY_VERSION,
     TERMINATED_STATUS,
 )
-from society.inheritance import assemble_inheritance_package, collect_taboo_tags
+from society.inheritance import assemble_inheritance_package, build_taboo_registry
 from society.lifespan import LifespanRunner
 from society.memorials import build_memorial_record, group_evals_by_agent
 from society.memory import build_private_scratchpad
@@ -166,10 +166,17 @@ class GenerationRunner:
         previous_memorials = self.storage.list_generation_memorials(previous_generation_id)
         previous_evals = self.storage.list_generation_evals(previous_generation_id)
         previous_selection = select_candidates(previous_agents, previous_evals, previous_artifacts)
+        prior_memorials = self.storage.list_memorials_before_generation(generation_id)
+        previous_generation = self.storage.get_generation(previous_generation_id)
+        previous_lineage_updates = [] if previous_generation is None else previous_generation.summary_json.get("lineage_updates", [])
 
         agent_by_id = {agent.agent_id: agent for agent in previous_agents}
         artifacts_by_agent: dict[str, list[ArtifactRecord]] = defaultdict(list)
         memorials_by_agent: dict[str, list[Any]] = defaultdict(list)
+        taboo_tags_by_agent: dict[str, list[str]] = {
+            update["agent_id"]: update.get("taboo_tags", [])
+            for update in previous_lineage_updates
+        }
         for artifact in previous_artifacts:
             artifacts_by_agent[artifact.author_agent_id].append(artifact)
         for memorial in previous_memorials:
@@ -195,7 +202,8 @@ class GenerationRunner:
             "eligible_by_role": dict(eligible_by_role),
             "artifacts_by_agent": dict(artifacts_by_agent),
             "memorials_by_agent": dict(memorials_by_agent),
-            "taboo_tags": collect_taboo_tags(previous_memorials),
+            "taboo_tags_by_agent": taboo_tags_by_agent,
+            "taboo_tags": build_taboo_registry(prior_memorials),
         }
 
     def run(self, *, generation_id: int | None = None, seed: int | None = None, dry_run: bool = False) -> dict[str, Any]:
@@ -467,6 +475,8 @@ class GenerationRunner:
 
             parent_agent = None if parent_assignment is None else parent_assignment["agent"]
             parent_lineage_ids = [] if parent_agent is None else [parent_agent.lineage_id]
+            parent_taboo_tags = [] if parent_agent is None else parent_context["taboo_tags_by_agent"].get(parent_agent.agent_id, [])
+            inherited_taboo_tags = sorted({*parent_context["taboo_tags"], *parent_taboo_tags})
             inherited = assemble_inheritance_package(
                 artifacts=[]
                 if parent_agent is None
@@ -476,7 +486,7 @@ class GenerationRunner:
                 else parent_context["memorials_by_agent"].get(parent_agent.agent_id, []),
                 artifact_limit=self.config.inheritance.artifact_summaries_per_agent,
                 memorial_limit=self.config.inheritance.memorials_per_agent,
-                extra_taboo_tags=parent_context["taboo_tags"],
+                extra_taboo_tags=inherited_taboo_tags,
             )
             agent = AgentRecord(
                 agent_id=agent_id,
@@ -517,6 +527,8 @@ class GenerationRunner:
                     "parent_lineage_ids": parent_lineage_ids,
                     "inheritance_source_agent_id": None if parent_agent is None else parent_agent.agent_id,
                     "inheritance_source_generation_id": parent_context["previous_generation_id"],
+                    "lineage_taboo_tags": parent_taboo_tags,
+                    "registry_taboo_tags": parent_context["taboo_tags"],
                     "inherited_artifact_ids": inherited.artifact_ids,
                     "inherited_memorial_ids": inherited.memorial_ids,
                     "taboo_tags": inherited.taboo_tags,

@@ -34,3 +34,28 @@ def test_blocked_lineages_do_not_propagate_across_generations(minimal_config) ->
         assert "anti_corruption" in adversary_update["taboo_tags"]
     finally:
         storage.close()
+
+
+def test_sticky_taboo_registry_survives_one_clean_generation(minimal_config) -> None:
+    storage = StorageManager(root_dir=minimal_config.storage.root_dir, db_path=minimal_config.storage.db_path)
+    provider = build_provider(minimal_config.provider.name, minimal_config.provider.model)
+    try:
+        runner = GenerationRunner(config=minimal_config, storage=storage, provider=provider, repo_root=REPO_ROOT)
+        summary_one = runner.run(generation_id=1)
+        summary_two = runner.run(generation_id=2)
+        summary_three = runner.run(generation_id=3)
+
+        adversary_one = next(item for item in summary_one["selection_outcome"] if item["role"] == "adversary")
+        adversary_two = next(item for item in summary_two["selection_outcome"] if item["role"] == "adversary")
+        adversary_three = next(item for item in summary_three["selection_outcome"] if item["role"] == "adversary")
+        update_two = next(item for item in summary_two["lineage_updates"] if item["role"] == "adversary")
+        update_three = next(item for item in summary_three["lineage_updates"] if item["role"] == "adversary")
+
+        assert adversary_one["propagation_blocked"] is True
+        assert adversary_two["propagation_blocked"] is False
+        assert adversary_three["propagation_blocked"] is False
+        assert "anti_corruption" in update_two["taboo_tags"]
+        assert "anti_corruption" in update_three["taboo_tags"]
+        assert "anti_corruption" in update_three["registry_taboo_tags"]
+    finally:
+        storage.close()

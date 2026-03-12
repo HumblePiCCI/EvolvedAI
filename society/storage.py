@@ -413,6 +413,18 @@ class StorageManager:
         ).fetchall()
         return [self._memorial_from_row(row) for row in rows]
 
+    def list_memorials_before_generation(self, before_generation_id: int) -> list[MemorialRecord]:
+        rows = self.conn.execute(
+            """
+            SELECT memorials.* FROM memorials
+            JOIN agents ON agents.agent_id = memorials.source_agent_id
+            WHERE agents.generation_id < ?
+            ORDER BY memorials.created_at
+            """,
+            (before_generation_id,),
+        ).fetchall()
+        return [self._memorial_from_row(row) for row in rows]
+
     def get_generation(self, generation_id: int) -> GenerationRecord | None:
         row = self.conn.execute("SELECT * FROM generations WHERE generation_id = ?", (generation_id,)).fetchone()
         return None if row is None else self._generation_from_row(row)
