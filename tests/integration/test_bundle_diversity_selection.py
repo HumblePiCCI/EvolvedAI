@@ -51,7 +51,7 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
     provider = build_provider(config.provider.name, config.provider.model)
     try:
         runner = GenerationRunner(config=config, storage=storage, provider=provider, repo_root=REPO_ROOT)
-        generation_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        generation_ids = list(range(1, 14))
         for generation_id in generation_ids:
             runner.run(generation_id=generation_id)
 
@@ -70,22 +70,26 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert any(metric["newly_admitted_count"] > 0 for metric in post_root)
         assert any(metric["post_admission_grace_count"] > 0 for metric in post_root)
         assert any(metric["archive_reentry_block_count"] > 0 for metric in post_root)
+        assert any(metric["archive_escalated_backoff_count"] > 0 for metric in post_root)
         assert any(metric["archive_reentry_attempt_count"] > 0 for metric in post_root)
         assert any(metric["archive_underperform_count"] > 0 for metric in post_root)
         assert any(metric["archive_eviction_count"] > 0 for metric in post_root)
         assert any(metric["repeat_eviction_count"] > 0 for metric in post_root)
+        assert any(metric["archive_repeat_eviction_max_tier"] >= 2 for metric in post_root)
         assert any(metric["archive_admission_conversion_rate"] > 0.0 for metric in post_root)
         assert any(metric["archive_reentry_converted_count"] > 0 for metric in post_root)
         assert any(metric["archive_reentry_mean_gap_generations"] > 0.0 for metric in post_root)
+        assert any(metric["archive_retired_count"] > 0 for metric in post_root)
         assert any(metric["bundle_turnover_rate"] > 0.0 for metric in post_root)
         assert any(metric["new_bundle_win_rate"] > 0.0 for metric in post_root)
         assert any(metric["exploration_bundle_survival_rate"] > 0.0 for metric in post_root)
         assert any(metric["bundle_archive_reentry_backoff_roles"] for metric in post_root)
         assert any(metric["bundle_archive_reentry_block_roles"] for metric in post_root)
+        assert any(metric["bundle_archive_escalated_backoff_roles"] for metric in post_root)
         assert any(metric["bundle_archive_underperform_roles"] for metric in post_root)
         assert any(metric["bundle_archive_eviction_roles"] for metric in post_root)
         assert any(metric["bundle_archive_repeat_eviction_roles"] for metric in post_root)
-        assert all(metric["bundle_archive_cooldown_count"] == 0 for metric in post_root)
+        assert any(metric["bundle_archive_retired_roles"] for metric in post_root)
         assert any(
             post_root[index - 1]["archive_admission_pending_count"] > 0
             and post_root[index]["bundle_archive_count"] == 0
@@ -122,10 +126,19 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         reentry_generation = next(metric for metric in post_root if metric["archive_reentry_converted_count"] > 0)
         assert reentry_generation["archive_admitted_count"] > 0
         assert reentry_generation["newly_admitted_count"] > 0
-        assert reentry_generation["archive_reentry_mean_gap_generations"] >= 2.0
+        assert reentry_generation["archive_reentry_mean_gap_generations"] >= 4.0
         repeat_eviction_generation = next(metric for metric in post_root if metric["repeat_eviction_count"] > 0)
         assert repeat_eviction_generation["archive_eviction_count"] > 0
+        assert repeat_eviction_generation["archive_repeat_eviction_max_tier"] >= 2
+        assert repeat_eviction_generation["archive_retired_count"] > 0
+        assert repeat_eviction_generation["bundle_archive_retired_roles"]
         assert repeat_eviction_generation["largest_bundle_share"] < 0.5
+        retired_generation_index = next(
+            index for index, metric in enumerate(post_root) if metric["archive_retired_count"] > 0
+        )
+        for metric in post_root[retired_generation_index + 1 :]:
+            assert metric["archive_reentry_converted_count"] == 0
+            assert metric["archive_admitted_count"] == 0
         assert max(metric["prompt_bundle_count"] for metric in post_root) <= 9
         assert any(
             post_root[index]["prompt_bundle_count"] <= post_root[index - 1]["prompt_bundle_count"]
@@ -141,6 +154,7 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert "archive_admission_pending_count" in latest_summary["selection_summary"]
         assert "archive_proving_count" in latest_summary["selection_summary"]
         assert "archive_reentry_block_count" in latest_summary["selection_summary"]
+        assert "archive_escalated_backoff_count" in latest_summary["selection_summary"]
         assert "archive_reentry_attempt_count" in latest_summary["selection_summary"]
         assert "archive_underperform_count" in latest_summary["selection_summary"]
         assert "archive_admitted_count" in latest_summary["selection_summary"]
@@ -148,17 +162,21 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert "post_admission_grace_count" in latest_summary["selection_summary"]
         assert "archive_eviction_count" in latest_summary["selection_summary"]
         assert "repeat_eviction_count" in latest_summary["selection_summary"]
+        assert "archive_repeat_eviction_max_tier" in latest_summary["selection_summary"]
         assert "archive_admission_conversion_rate" in latest_summary["selection_summary"]
         assert "archive_reentry_converted_count" in latest_summary["selection_summary"]
         assert "archive_reentry_mean_gap_generations" in latest_summary["selection_summary"]
         assert "archive_reentry_max_gap_generations" in latest_summary["selection_summary"]
+        assert "archive_retired_count" in latest_summary["selection_summary"]
         assert "archive_failed_admission_count" in latest_summary["selection_summary"]
         assert "bundle_archive_post_admission_grace_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_reentry_backoff_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_reentry_block_roles" in latest_summary["selection_summary"]
+        assert "bundle_archive_escalated_backoff_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_underperform_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_eviction_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_repeat_eviction_roles" in latest_summary["selection_summary"]
+        assert "bundle_archive_retired_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_cooldown_fresh_admission_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_cooldown_long_lived_debt_roles" in latest_summary["selection_summary"]
         assert "bundle_archive_cooldown_recovery_roles" in latest_summary["selection_summary"]

@@ -261,6 +261,14 @@ def _bundle_archive_underperforming(state: Mapping[str, Any]) -> bool:
     return int(state.get("archive_underperform_streak", 0)) > 0
 
 
+def _bundle_archive_retired(state: Mapping[str, Any]) -> bool:
+    return bool(state.get("archive_retired", False))
+
+
+def _bundle_archive_repeat_eviction_tier(state: Mapping[str, Any]) -> int:
+    return int(state.get("archive_repeat_eviction_tier", 0))
+
+
 def _bundle_archive_reentry_backoff_active(state: Mapping[str, Any]) -> bool:
     return bool(state.get("archive_reentry_blocked", False)) or int(state.get("archive_reentry_backoff_remaining", 0)) > 0
 
@@ -270,10 +278,12 @@ def _bundle_retention_key(
     candidate: Mapping[str, Any],
     bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None,
     by_bundle: Mapping[str, Sequence[Mapping[str, Any]]],
-) -> tuple[int, int, int, int, int, int, int, float, float, int]:
+) -> tuple[int, int, int, int, int, int, int, int, int, float, float, int]:
     state = _bundle_state(bundle_id, bundle_state_by_signature)
     decision = candidate["decision"]
     return (
+        int(_bundle_archive_retired(state)),
+        _bundle_archive_repeat_eviction_tier(state),
         int(_bundle_archive_admission_probation(state)),
         int(_bundle_archive_reentry_backoff_active(state)),
         int(_bundle_archive_underperforming(state)),
@@ -339,7 +349,9 @@ def _bundle_balanced_selection(
         (bundle_id, item)
         for bundle_id, item in representatives
         if (
-            not _bundle_archive_admission_probation(_bundle_state(bundle_id, bundle_state_by_signature))
+            not _bundle_archive_retired(_bundle_state(bundle_id, bundle_state_by_signature))
+            and _bundle_archive_repeat_eviction_tier(_bundle_state(bundle_id, bundle_state_by_signature)) == 0
+            and not _bundle_archive_admission_probation(_bundle_state(bundle_id, bundle_state_by_signature))
             and not _bundle_archive_reentry_backoff_active(_bundle_state(bundle_id, bundle_state_by_signature))
             and not _bundle_archive_underperforming(_bundle_state(bundle_id, bundle_state_by_signature))
         )
@@ -375,6 +387,8 @@ def _bundle_balanced_selection(
                 if bundle_slots[bundle_id] > 0
             ),
             key=lambda candidate: (
+                int(_bundle_archive_retired(_bundle_state(candidate[0], bundle_state_by_signature))),
+                _bundle_archive_repeat_eviction_tier(_bundle_state(candidate[0], bundle_state_by_signature)),
                 int(_bundle_archive_reentry_backoff_active(_bundle_state(candidate[0], bundle_state_by_signature))),
                 int(_bundle_archive_underperforming(_bundle_state(candidate[0], bundle_state_by_signature))),
                 _bundle_state(candidate[0], bundle_state_by_signature).get("stale_generations", 0),
@@ -399,7 +413,7 @@ def _bundle_balanced_selection(
 
     while len(selected) < slot_count:
         candidate_options: list[
-            tuple[tuple[int, int, int, int, int, int, int, float, float, int], str, dict[str, Any]]
+            tuple[tuple[int, int, int, int, int, int, int, int, int, float, float, int], str, dict[str, Any]]
         ] = []
         for bundle_id, items in by_bundle.items():
             if reserve_penalty_slots > 0 and bundle_slots[bundle_id] == 0:
@@ -411,6 +425,8 @@ def _bundle_balanced_selection(
                 (
                     (
                         bundle_slots[bundle_id],
+                        int(_bundle_archive_retired(state)),
+                        _bundle_archive_repeat_eviction_tier(state),
                         int(_bundle_archive_admission_probation(state)),
                         int(_bundle_archive_reentry_backoff_active(state)),
                         int(_bundle_archive_underperforming(state)),
@@ -434,6 +450,8 @@ def _bundle_balanced_selection(
                     (
                         (
                             bundle_slots[bundle_id],
+                            int(_bundle_archive_retired(state)),
+                            _bundle_archive_repeat_eviction_tier(state),
                             int(_bundle_archive_admission_probation(state)),
                             int(_bundle_archive_reentry_backoff_active(state)),
                             int(_bundle_archive_underperforming(state)),

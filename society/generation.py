@@ -19,6 +19,9 @@ from society.constants import (
     BUNDLE_ARCHIVE_MONOCULTURE_THRESHOLD,
     BUNDLE_ARCHIVE_POST_ADMISSION_GRACE_GENERATIONS,
     BUNDLE_ARCHIVE_REENTRY_BACKOFF_GENERATIONS,
+    BUNDLE_ARCHIVE_REPEAT_EVICTION_BACKOFF_ESCALATION,
+    BUNDLE_ARCHIVE_REPEAT_EVICTION_PROVING_STREAK_BONUS,
+    BUNDLE_ARCHIVE_REPEAT_EVICTION_RETIREMENT_THRESHOLD,
     BUNDLE_ARCHIVE_RETIREMENT_USEFUL_SCORE_FLOOR,
     BUNDLE_ARCHIVE_RETIREMENT_USEFUL_STREAK,
     BUNDLE_ARCHIVE_UNDERPERFORM_EVICTION_STREAK,
@@ -359,6 +362,14 @@ class GenerationRunner:
                 for state in (bundle_state_by_role or {}).get(role, {}).values()
             )
         }
+        bundle_archive_escalated_backoff_roles = {
+            role
+            for role in bundle_archive_candidate_roles
+            if any(
+                int(state.get("archive_reentry_backoff_target", 0)) > BUNDLE_ARCHIVE_REENTRY_BACKOFF_GENERATIONS
+                for state in (bundle_state_by_role or {}).get(role, {}).values()
+            )
+        }
         bundle_archive_underperform_roles = {
             role
             for role in bundle_archive_candidate_roles
@@ -379,6 +390,11 @@ class GenerationRunner:
             role
             for role, role_states in (bundle_state_by_role or {}).items()
             if any(int(state.get("archive_eviction_count", 0)) > 1 for state in role_states.values())
+        }
+        bundle_archive_retired_roles = {
+            role
+            for role, role_states in (bundle_state_by_role or {}).items()
+            if any(bool(state.get("archive_retired", False)) for state in role_states.values())
         }
         bundle_archive_cooldown_fresh_admission_roles = {
             role
@@ -465,6 +481,8 @@ class GenerationRunner:
                     state.get("archive_reentry_backoff_remaining", 0)
                 ) > 0:
                     pruned_reason = "archive_reentry_backoff_pruned"
+                elif bool(state.get("archive_retired", False)):
+                    pruned_reason = "archive_retired_pruned"
                 elif bool(state.get("archive_candidate_generations", 0)) and not bool(state.get("archive_admitted", False)):
                     pruned_reason = "archive_admission_pruned"
                 elif int(state.get("archive_decay_generations", 0)) >= BUNDLE_ARCHIVE_DECAY_PRUNE_GENERATION_THRESHOLD:
@@ -495,8 +513,14 @@ class GenerationRunner:
                         "archive_reentry_backoff_remaining": int(
                             state.get("archive_reentry_backoff_remaining", 0)
                         ),
+                        "archive_reentry_backoff_target": int(state.get("archive_reentry_backoff_target", 0)),
+                        "archive_reentry_required_proving_streak": int(
+                            state.get("archive_reentry_required_proving_streak", 0)
+                        ),
                         "archive_reentry_attempt_count": int(state.get("archive_reentry_attempt_count", 0)),
                         "archive_reentry_blocked": bool(state.get("archive_reentry_blocked", False)),
+                        "archive_repeat_eviction_tier": int(state.get("archive_repeat_eviction_tier", 0)),
+                        "archive_retired": bool(state.get("archive_retired", False)),
                         "archive_decay_debt": int(state.get("archive_decay_debt", 0)),
                         "archive_decay_generations": int(state.get("archive_decay_generations", 0)),
                         "archive_useful_clean_streak": int(state.get("archive_useful_clean_streak", 0)),
@@ -537,9 +561,11 @@ class GenerationRunner:
             "bundle_archive_post_admission_grace_roles": sorted(bundle_archive_post_admission_grace_roles),
             "bundle_archive_reentry_backoff_roles": sorted(bundle_archive_reentry_backoff_roles),
             "bundle_archive_reentry_block_roles": sorted(bundle_archive_reentry_block_roles),
+            "bundle_archive_escalated_backoff_roles": sorted(bundle_archive_escalated_backoff_roles),
             "bundle_archive_underperform_roles": sorted(bundle_archive_underperform_roles),
             "bundle_archive_eviction_roles": sorted(bundle_archive_eviction_roles),
             "bundle_archive_repeat_eviction_roles": sorted(bundle_archive_repeat_eviction_roles),
+            "bundle_archive_retired_roles": sorted(bundle_archive_retired_roles),
             "bundle_archive_cooldown_fresh_admission_roles": sorted(bundle_archive_cooldown_fresh_admission_roles),
             "bundle_archive_cooldown_roles": sorted(bundle_archive_cooldown_roles),
             "bundle_archive_cooldown_long_lived_debt_roles": sorted(bundle_archive_cooldown_long_lived_debt_roles),
@@ -627,10 +653,15 @@ class GenerationRunner:
                 prior_archive_reentry_backoff_remaining = int(
                     prior_state.get("archive_reentry_backoff_remaining", 0)
                 )
+                prior_archive_reentry_backoff_target = int(
+                    prior_state.get("archive_reentry_backoff_target", BUNDLE_ARCHIVE_REENTRY_BACKOFF_GENERATIONS)
+                )
                 prior_archive_reentry_attempt_count = int(prior_state.get("archive_reentry_attempt_count", 0))
                 prior_archive_underperform_streak = int(prior_state.get("archive_underperform_streak", 0))
                 prior_archive_eviction_count = int(prior_state.get("archive_eviction_count", 0))
                 prior_archive_last_eviction_generation_id = prior_state.get("archive_last_eviction_generation_id")
+                prior_archive_retired = bool(prior_state.get("archive_retired", False))
+                prior_archive_retired_generation_id = prior_state.get("archive_retired_generation_id")
                 prior_archive_admitted = bool(prior_state.get("archive_admitted", False))
                 role_public_benchmark = role_survivor_public_benchmark.get(role, 0.0)
                 avg_public_score = round(
@@ -638,16 +669,23 @@ class GenerationRunner:
                     4,
                 ) if bundle_decisions else 0.0
                 archive_candidate = (
-                    archive_generated
-                    or prior_archive_candidate_generations > 0
-                    or prior_archive_admitted
-                    or int(prior_state.get("archive_generations", 0)) > 0
-                    or prior_archive_eviction_count > 0
+                    not prior_archive_retired
+                    and (
+                        archive_generated
+                        or prior_archive_candidate_generations > 0
+                        or prior_archive_admitted
+                        or int(prior_state.get("archive_generations", 0)) > 0
+                        or prior_archive_eviction_count > 0
+                    )
                 )
                 base_useful_admission_signal = (
                     archive_candidate
                     and clean_win
                     and avg_public_score >= BUNDLE_ARCHIVE_ADMISSION_PUBLIC_SCORE_FLOOR
+                )
+                archive_reentry_required_proving_streak = (
+                    BUNDLE_ARCHIVE_ADMISSION_USEFUL_STREAK
+                    + (prior_archive_eviction_count * BUNDLE_ARCHIVE_REPEAT_EVICTION_PROVING_STREAK_BONUS)
                 )
                 archive_reentry_attempted = bool(
                     prior_archive_eviction_count > 0 and base_useful_admission_signal
@@ -665,7 +703,7 @@ class GenerationRunner:
                 )
                 archive_admitted = prior_archive_admitted or (
                     useful_admission_signal
-                    and archive_proving_streak >= BUNDLE_ARCHIVE_ADMISSION_USEFUL_STREAK
+                    and archive_proving_streak >= archive_reentry_required_proving_streak
                 )
                 archive_admission_converted = bool(not prior_archive_admitted and archive_admitted)
                 clean_win_generations = int(prior_state.get("clean_win_generations", 0)) + int(clean_win)
@@ -702,17 +740,35 @@ class GenerationRunner:
                     archive_admitted
                     and archive_underperform_streak >= BUNDLE_ARCHIVE_UNDERPERFORM_EVICTION_STREAK
                 )
+                archive_eviction_count = prior_archive_eviction_count + int(archive_evicted)
+                archive_repeat_eviction_tier = archive_eviction_count
+                archive_reentry_backoff_target = (
+                    BUNDLE_ARCHIVE_REENTRY_BACKOFF_GENERATIONS
+                    + max(0, archive_eviction_count - 1) * BUNDLE_ARCHIVE_REPEAT_EVICTION_BACKOFF_ESCALATION
+                    if archive_eviction_count > 0
+                    else prior_archive_reentry_backoff_target
+                )
+                archive_retired = bool(
+                    prior_archive_retired
+                    or archive_eviction_count >= BUNDLE_ARCHIVE_REPEAT_EVICTION_RETIREMENT_THRESHOLD
+                )
                 if archive_evicted:
                     archive_admitted = False
-                    archive_admission_pending_generations = max(
-                        1,
-                        prior_archive_admission_pending_generations + 1,
+                    archive_admission_pending_generations = (
+                        0
+                        if archive_retired
+                        else max(
+                            1,
+                            prior_archive_admission_pending_generations + 1,
+                        )
                     )
                     archive_proving_streak = 0
                     archive_generations = 0
                     archive_post_admission_grace_remaining = 0
                 archive_reentry_backoff_remaining = (
-                    BUNDLE_ARCHIVE_REENTRY_BACKOFF_GENERATIONS
+                    0
+                    if archive_retired
+                    else archive_reentry_backoff_target
                     if archive_evicted
                     else max(0, prior_archive_reentry_backoff_remaining - 1)
                 )
@@ -721,6 +777,11 @@ class GenerationRunner:
                 )
                 archive_last_eviction_generation_id = (
                     generation_id if archive_evicted else prior_archive_last_eviction_generation_id
+                )
+                archive_retired_generation_id = (
+                    generation_id
+                    if archive_retired and not prior_archive_retired
+                    else prior_archive_retired_generation_id
                 )
                 archive_reentry_converted = bool(
                     archive_admission_converted
@@ -732,6 +793,10 @@ class GenerationRunner:
                     if archive_reentry_converted
                     else None
                 )
+                if archive_retired:
+                    archive_candidate_generations = prior_archive_candidate_generations
+                    archive_admission_pending_generations = 0
+                    archive_proving_streak = 0
                 useful_clean = (
                     archive_admitted
                     and clean_win
@@ -782,16 +847,21 @@ class GenerationRunner:
                     "archive_admitted": archive_admitted,
                     "archive_post_admission_grace_remaining": archive_post_admission_grace_remaining,
                     "archive_reentry_backoff_remaining": archive_reentry_backoff_remaining,
+                    "archive_reentry_backoff_target": archive_reentry_backoff_target,
+                    "archive_reentry_required_proving_streak": archive_reentry_required_proving_streak,
                     "archive_reentry_attempt_count": archive_reentry_attempt_count,
                     "archive_reentry_blocked": archive_reentry_blocked,
                     "archive_reentry_converted": archive_reentry_converted,
                     "archive_reentry_gap_generations": archive_reentry_gap_generations,
+                    "archive_repeat_eviction_tier": archive_repeat_eviction_tier,
                     "archive_underperform_streak": archive_underperform_streak,
                     "archive_underperform_margin": archive_underperform_margin,
                     "archive_survivor_public_benchmark": role_public_benchmark,
                     "archive_evicted": archive_evicted,
-                    "archive_eviction_count": prior_archive_eviction_count + int(archive_evicted),
+                    "archive_eviction_count": archive_eviction_count,
                     "archive_last_eviction_generation_id": archive_last_eviction_generation_id,
+                    "archive_retired": archive_retired,
+                    "archive_retired_generation_id": archive_retired_generation_id,
                     "retention_debt": retention_debt,
                     "archive_decay_debt": archive_decay_debt,
                     "archive_decay_generations": archive_decay_generations,
@@ -1512,12 +1582,27 @@ class GenerationRunner:
                 "role": role,
                 "bundle_signature": bundle_signature,
                 "archive_reentry_backoff_remaining": state["archive_reentry_backoff_remaining"],
+                "archive_reentry_backoff_target": state["archive_reentry_backoff_target"],
+                "archive_reentry_required_proving_streak": state["archive_reentry_required_proving_streak"],
                 "archive_reentry_attempt_count": state["archive_reentry_attempt_count"],
+                "archive_repeat_eviction_tier": state["archive_repeat_eviction_tier"],
                 "avg_public_score": state["avg_public_score"],
             }
             for role, role_states in bundle_state_by_role.items()
             for bundle_signature, state in role_states.items()
             if state["archive_reentry_blocked"]
+        ]
+        escalated_backoff_bundles = [
+            {
+                "role": role,
+                "bundle_signature": bundle_signature,
+                "archive_reentry_backoff_target": state["archive_reentry_backoff_target"],
+                "archive_repeat_eviction_tier": state["archive_repeat_eviction_tier"],
+                "avg_public_score": state["avg_public_score"],
+            }
+            for role, role_states in bundle_state_by_role.items()
+            for bundle_signature, state in role_states.items()
+            if state["archive_reentry_backoff_target"] > BUNDLE_ARCHIVE_REENTRY_BACKOFF_GENERATIONS
         ]
         archive_underperform_bundles = [
             {
@@ -1542,7 +1627,11 @@ class GenerationRunner:
                 "archive_survivor_public_benchmark": state["archive_survivor_public_benchmark"],
                 "archive_candidate_generations": state["archive_candidate_generations"],
                 "archive_admission_pending_generations": state["archive_admission_pending_generations"],
+                "archive_reentry_backoff_target": state["archive_reentry_backoff_target"],
+                "archive_reentry_required_proving_streak": state["archive_reentry_required_proving_streak"],
                 "archive_reentry_attempt_count": state["archive_reentry_attempt_count"],
+                "archive_repeat_eviction_tier": state["archive_repeat_eviction_tier"],
+                "archive_retired": state["archive_retired"],
                 "avg_public_score": state["avg_public_score"],
             }
             for role, role_states in bundle_state_by_role.items()
@@ -1554,7 +1643,10 @@ class GenerationRunner:
                 "role": role,
                 "bundle_signature": bundle_signature,
                 "archive_eviction_count": state["archive_eviction_count"],
+                "archive_repeat_eviction_tier": state["archive_repeat_eviction_tier"],
+                "archive_reentry_backoff_target": state["archive_reentry_backoff_target"],
                 "archive_reentry_attempt_count": state["archive_reentry_attempt_count"],
+                "archive_retired": state["archive_retired"],
                 "avg_public_score": state["avg_public_score"],
             }
             for role, role_states in bundle_state_by_role.items()
@@ -1570,8 +1662,11 @@ class GenerationRunner:
                 "archive_proving_streak": state["archive_proving_streak"],
                 "archive_admission_converted": state["archive_admission_converted"],
                 "archive_post_admission_grace_remaining": state["archive_post_admission_grace_remaining"],
+                "archive_reentry_required_proving_streak": state["archive_reentry_required_proving_streak"],
+                "archive_reentry_backoff_target": state["archive_reentry_backoff_target"],
                 "archive_reentry_attempt_count": state["archive_reentry_attempt_count"],
                 "archive_reentry_gap_generations": state["archive_reentry_gap_generations"],
+                "archive_repeat_eviction_tier": state["archive_repeat_eviction_tier"],
                 "archive_underperform_streak": state["archive_underperform_streak"],
                 "archive_underperform_margin": state["archive_underperform_margin"],
                 "archive_survivor_public_benchmark": state["archive_survivor_public_benchmark"],
@@ -1588,12 +1683,29 @@ class GenerationRunner:
                 "role": role,
                 "bundle_signature": bundle_signature,
                 "archive_reentry_gap_generations": state["archive_reentry_gap_generations"],
+                "archive_reentry_backoff_target": state["archive_reentry_backoff_target"],
                 "archive_reentry_attempt_count": state["archive_reentry_attempt_count"],
+                "archive_repeat_eviction_tier": state["archive_repeat_eviction_tier"],
                 "avg_public_score": state["avg_public_score"],
             }
             for role, role_states in bundle_state_by_role.items()
             for bundle_signature, state in role_states.items()
             if state["archive_reentry_converted"]
+        ]
+        archive_retired_bundles = [
+            {
+                "role": role,
+                "bundle_signature": bundle_signature,
+                "archive_eviction_count": state["archive_eviction_count"],
+                "archive_repeat_eviction_tier": state["archive_repeat_eviction_tier"],
+                "archive_reentry_backoff_target": state["archive_reentry_backoff_target"],
+                "archive_reentry_attempt_count": state["archive_reentry_attempt_count"],
+                "archive_retired_generation_id": state["archive_retired_generation_id"],
+                "avg_public_score": state["avg_public_score"],
+            }
+            for role, role_states in bundle_state_by_role.items()
+            for bundle_signature, state in role_states.items()
+            if state["archive_retired"]
         ]
         previous_proving_bundle_signatures = {
             (item["role"], item["bundle_signature"])
@@ -1738,9 +1850,11 @@ class GenerationRunner:
             "bundle_archive_post_admission_grace_roles": parent_pool_summary["bundle_archive_post_admission_grace_roles"],
             "bundle_archive_reentry_backoff_roles": parent_pool_summary["bundle_archive_reentry_backoff_roles"],
             "bundle_archive_reentry_block_roles": parent_pool_summary["bundle_archive_reentry_block_roles"],
+            "bundle_archive_escalated_backoff_roles": parent_pool_summary["bundle_archive_escalated_backoff_roles"],
             "bundle_archive_underperform_roles": parent_pool_summary["bundle_archive_underperform_roles"],
             "bundle_archive_eviction_roles": parent_pool_summary["bundle_archive_eviction_roles"],
             "bundle_archive_repeat_eviction_roles": parent_pool_summary["bundle_archive_repeat_eviction_roles"],
+            "bundle_archive_retired_roles": parent_pool_summary["bundle_archive_retired_roles"],
             "bundle_archive_cooldown_roles": parent_pool_summary["bundle_archive_cooldown_roles"],
             "bundle_archive_cooldown_fresh_admission_roles": parent_pool_summary[
                 "bundle_archive_cooldown_fresh_admission_roles"
@@ -1767,6 +1881,8 @@ class GenerationRunner:
             "post_admission_grace_count": len(post_admission_grace_bundles),
             "archive_reentry_block_bundles": archive_reentry_block_bundles,
             "archive_reentry_block_count": len(archive_reentry_block_bundles),
+            "escalated_backoff_bundles": escalated_backoff_bundles,
+            "archive_escalated_backoff_count": len(escalated_backoff_bundles),
             "archive_reentry_attempt_count": sum(
                 int(state.get("archive_reentry_attempt_count", 0))
                 for role_states in bundle_state_by_role.values()
@@ -1782,6 +1898,10 @@ class GenerationRunner:
             "archive_eviction_count": len(archive_evicted_bundles),
             "repeat_eviction_bundles": repeat_eviction_bundles,
             "repeat_eviction_count": len(repeat_eviction_bundles),
+            "archive_repeat_eviction_max_tier": max(
+                (item["archive_repeat_eviction_tier"] for item in repeat_eviction_bundles),
+                default=0,
+            ),
             "archive_admission_converted_bundles": archive_admission_converted_bundles,
             "archive_admission_converted_count": len(archive_admission_converted_bundles),
             "archive_admission_conversion_rate": archive_admission_conversion_rate,
@@ -1793,6 +1913,8 @@ class GenerationRunner:
                 else 0.0
             ),
             "archive_reentry_max_gap_generations": max(archive_reentry_gap_values, default=0),
+            "archive_retired_bundles": archive_retired_bundles,
+            "archive_retired_count": len(archive_retired_bundles),
             "archive_failed_admission_bundles": archive_failed_admission_bundles,
             "archive_failed_admission_count": len(archive_failed_admission_bundles),
             "bundle_decay_prune_roles": parent_pool_summary["bundle_decay_prune_roles"],
@@ -1890,9 +2012,11 @@ class GenerationRunner:
                 f"- bundle_archive_post_admission_grace_roles: {', '.join(summary['selection_summary'].get('bundle_archive_post_admission_grace_roles', [])) or 'none'}",
                 f"- bundle_archive_reentry_backoff_roles: {', '.join(summary['selection_summary'].get('bundle_archive_reentry_backoff_roles', [])) or 'none'}",
                 f"- bundle_archive_reentry_block_roles: {', '.join(summary['selection_summary'].get('bundle_archive_reentry_block_roles', [])) or 'none'}",
+                f"- bundle_archive_escalated_backoff_roles: {', '.join(summary['selection_summary'].get('bundle_archive_escalated_backoff_roles', [])) or 'none'}",
                 f"- bundle_archive_underperform_roles: {', '.join(summary['selection_summary'].get('bundle_archive_underperform_roles', [])) or 'none'}",
                 f"- bundle_archive_eviction_roles: {', '.join(summary['selection_summary'].get('bundle_archive_eviction_roles', [])) or 'none'}",
                 f"- bundle_archive_repeat_eviction_roles: {', '.join(summary['selection_summary'].get('bundle_archive_repeat_eviction_roles', [])) or 'none'}",
+                f"- bundle_archive_retired_roles: {', '.join(summary['selection_summary'].get('bundle_archive_retired_roles', [])) or 'none'}",
                 f"- bundle_archive_cooldown_roles: {', '.join(summary['selection_summary'].get('bundle_archive_cooldown_roles', [])) or 'none'}",
                 f"- bundle_archive_cooldown_fresh_admission_roles: {', '.join(summary['selection_summary'].get('bundle_archive_cooldown_fresh_admission_roles', [])) or 'none'}",
                 f"- bundle_archive_cooldown_long_lived_debt_roles: {', '.join(summary['selection_summary'].get('bundle_archive_cooldown_long_lived_debt_roles', [])) or 'none'}",
@@ -1902,6 +2026,7 @@ class GenerationRunner:
                 f"- archive_admission_pending_count: {summary['selection_summary'].get('archive_admission_pending_count', 0)}",
                 f"- archive_proving_count: {summary['selection_summary'].get('archive_proving_count', 0)}",
                 f"- archive_reentry_block_count: {summary['selection_summary'].get('archive_reentry_block_count', 0)}",
+                f"- archive_escalated_backoff_count: {summary['selection_summary'].get('archive_escalated_backoff_count', 0)}",
                 f"- archive_reentry_attempt_count: {summary['selection_summary'].get('archive_reentry_attempt_count', 0)}",
                 f"- archive_underperform_count: {summary['selection_summary'].get('archive_underperform_count', 0)}",
                 f"- archive_admitted_count: {summary['selection_summary'].get('archive_admitted_count', 0)}",
@@ -1909,10 +2034,12 @@ class GenerationRunner:
                 f"- post_admission_grace_count: {summary['selection_summary'].get('post_admission_grace_count', 0)}",
                 f"- archive_eviction_count: {summary['selection_summary'].get('archive_eviction_count', 0)}",
                 f"- repeat_eviction_count: {summary['selection_summary'].get('repeat_eviction_count', 0)}",
+                f"- archive_repeat_eviction_max_tier: {summary['selection_summary'].get('archive_repeat_eviction_max_tier', 0)}",
                 f"- archive_admission_converted_count: {summary['selection_summary'].get('archive_admission_converted_count', 0)}",
                 f"- archive_reentry_converted_count: {summary['selection_summary'].get('archive_reentry_converted_count', 0)}",
                 f"- archive_reentry_mean_gap_generations: {summary['selection_summary'].get('archive_reentry_mean_gap_generations', 0.0)}",
                 f"- archive_reentry_max_gap_generations: {summary['selection_summary'].get('archive_reentry_max_gap_generations', 0)}",
+                f"- archive_retired_count: {summary['selection_summary'].get('archive_retired_count', 0)}",
                 f"- archive_failed_admission_count: {summary['selection_summary'].get('archive_failed_admission_count', 0)}",
                 f"- bundle_archive_cooldown_recovery_count: {summary['selection_summary'].get('bundle_archive_cooldown_recovery_count', 0)}",
                 f"- bundle_archive_cooldown_recovery_max_generations: {summary['selection_summary'].get('bundle_archive_cooldown_recovery_max_generations', 0)}",
@@ -1968,12 +2095,16 @@ class GenerationRunner:
             lines.append(f"- archive_reentry_backoff_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_reentry_block_roles", []):
             lines.append(f"- archive_reentry_block_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_escalated_backoff_roles", []):
+            lines.append(f"- archive_escalated_backoff_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_underperform_roles", []):
             lines.append(f"- archive_underperform_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_eviction_roles", []):
             lines.append(f"- archive_eviction_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_repeat_eviction_roles", []):
             lines.append(f"- archive_repeat_eviction_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_retired_roles", []):
+            lines.append(f"- archive_retired_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_cooldown_roles", []):
             lines.append(f"- archive_cooldown_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_cooldown_fresh_admission_roles", []):
@@ -2011,7 +2142,17 @@ class GenerationRunner:
             lines.append(
                 f"- reentry_blocked:{item['role']}:{item['bundle_signature']} "
                 f"backoff_remaining={item.get('archive_reentry_backoff_remaining', 0)} "
+                f"backoff_target={item.get('archive_reentry_backoff_target', 0)} "
+                f"required_proving_streak={item.get('archive_reentry_required_proving_streak', 0)} "
                 f"attempt_count={item.get('archive_reentry_attempt_count', 0)} "
+                f"tier={item.get('archive_repeat_eviction_tier', 0)} "
+                f"avg_public_score={item.get('avg_public_score', 0.0)}"
+            )
+        for item in summary["selection_summary"].get("escalated_backoff_bundles", []):
+            lines.append(
+                f"- escalated_backoff:{item['role']}:{item['bundle_signature']} "
+                f"backoff_target={item.get('archive_reentry_backoff_target', 0)} "
+                f"tier={item.get('archive_repeat_eviction_tier', 0)} "
                 f"avg_public_score={item.get('avg_public_score', 0.0)}"
             )
         for item in summary["selection_summary"].get("archive_underperform_bundles", []):
@@ -2029,7 +2170,11 @@ class GenerationRunner:
                 f"streak={item.get('archive_underperform_streak', 0)} "
                 f"margin={item.get('archive_underperform_margin', 0.0)} "
                 f"benchmark={item.get('archive_survivor_public_benchmark', 0.0)} "
+                f"backoff_target={item.get('archive_reentry_backoff_target', 0)} "
+                f"required_proving_streak={item.get('archive_reentry_required_proving_streak', 0)} "
                 f"attempt_count={item.get('archive_reentry_attempt_count', 0)} "
+                f"tier={item.get('archive_repeat_eviction_tier', 0)} "
+                f"retired={str(item.get('archive_retired', False)).lower()} "
                 f"pending_generations={item.get('archive_admission_pending_generations', 0)} "
                 f"avg_public_score={item.get('avg_public_score', 0.0)}"
             )
@@ -2037,7 +2182,20 @@ class GenerationRunner:
             lines.append(
                 f"- repeat_eviction:{item['role']}:{item['bundle_signature']} "
                 f"eviction_count={item.get('archive_eviction_count', 0)} "
+                f"tier={item.get('archive_repeat_eviction_tier', 0)} "
+                f"backoff_target={item.get('archive_reentry_backoff_target', 0)} "
                 f"attempt_count={item.get('archive_reentry_attempt_count', 0)} "
+                f"retired={str(item.get('archive_retired', False)).lower()} "
+                f"avg_public_score={item.get('avg_public_score', 0.0)}"
+            )
+        for item in summary["selection_summary"].get("archive_retired_bundles", []):
+            lines.append(
+                f"- retired:{item['role']}:{item['bundle_signature']} "
+                f"eviction_count={item.get('archive_eviction_count', 0)} "
+                f"tier={item.get('archive_repeat_eviction_tier', 0)} "
+                f"backoff_target={item.get('archive_reentry_backoff_target', 0)} "
+                f"attempt_count={item.get('archive_reentry_attempt_count', 0)} "
+                f"retired_generation={item.get('archive_retired_generation_id')} "
                 f"avg_public_score={item.get('avg_public_score', 0.0)}"
             )
         for item in summary["selection_summary"].get("archive_admitted_bundles", []):
@@ -2047,8 +2205,11 @@ class GenerationRunner:
                 f"candidate_generations={item['archive_candidate_generations']} "
                 f"proving_streak={item.get('archive_proving_streak', 0)} "
                 f"grace_remaining={item.get('archive_post_admission_grace_remaining', 0)} "
+                f"required_proving_streak={item.get('archive_reentry_required_proving_streak', 0)} "
+                f"backoff_target={item.get('archive_reentry_backoff_target', 0)} "
                 f"reentry_attempt_count={item.get('archive_reentry_attempt_count', 0)} "
                 f"reentry_gap={item.get('archive_reentry_gap_generations')} "
+                f"tier={item.get('archive_repeat_eviction_tier', 0)} "
                 f"underperform_streak={item.get('archive_underperform_streak', 0)} "
                 f"underperform_margin={item.get('archive_underperform_margin', 0.0)} "
                 f"benchmark={item.get('archive_survivor_public_benchmark', 0.0)} "
@@ -2061,7 +2222,9 @@ class GenerationRunner:
             lines.append(
                 f"- reentry_converted:{item['role']}:{item['bundle_signature']} "
                 f"gap_generations={item.get('archive_reentry_gap_generations')} "
+                f"backoff_target={item.get('archive_reentry_backoff_target', 0)} "
                 f"attempt_count={item.get('archive_reentry_attempt_count', 0)} "
+                f"tier={item.get('archive_repeat_eviction_tier', 0)} "
                 f"avg_public_score={item.get('avg_public_score', 0.0)}"
             )
         for item in summary["selection_summary"].get("pruned_bundles", []):
