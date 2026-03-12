@@ -20,6 +20,8 @@ from society.constants import (
     BUNDLE_ARCHIVE_POST_ADMISSION_GRACE_GENERATIONS,
     BUNDLE_ARCHIVE_RETIREMENT_USEFUL_SCORE_FLOOR,
     BUNDLE_ARCHIVE_RETIREMENT_USEFUL_STREAK,
+    BUNDLE_ARCHIVE_UNDERPERFORM_EVICTION_STREAK,
+    BUNDLE_ARCHIVE_UNDERPERFORM_PUBLIC_SCORE_MARGIN,
     BUNDLE_STALE_GENERATION_THRESHOLD,
     COMPLETED_STATUS,
     CONSTITUTION_VERSION,
@@ -340,6 +342,22 @@ class GenerationRunner:
                 for state in (bundle_state_by_role or {}).get(role, {}).values()
             )
         }
+        bundle_archive_underperform_roles = {
+            role
+            for role in bundle_archive_candidate_roles
+            if any(
+                int(state.get("archive_underperform_streak", 0)) > 0
+                for state in (bundle_state_by_role or {}).get(role, {}).values()
+            )
+        }
+        bundle_archive_eviction_roles = {
+            role
+            for role in bundle_archive_candidate_roles
+            if any(
+                bool(state.get("archive_evicted", False))
+                for state in (bundle_state_by_role or {}).get(role, {}).values()
+            )
+        }
         bundle_archive_cooldown_fresh_admission_roles = {
             role
             for role in bundle_archive_candidate_roles
@@ -362,7 +380,12 @@ class GenerationRunner:
             )
         }
         bundle_archive_cooldown_long_lived_debt_roles = set(bundle_archive_cooldown_roles)
-        bundle_archive_roles = bundle_archive_candidate_roles - bundle_archive_cooldown_roles - bundle_archive_pending_roles
+        bundle_archive_roles = (
+            bundle_archive_candidate_roles
+            - bundle_archive_cooldown_roles
+            - bundle_archive_pending_roles
+            - bundle_archive_underperform_roles
+        )
         bundle_decay_prune_roles = {
             role
             for role, role_states in (bundle_state_by_role or {}).items()
@@ -412,6 +435,10 @@ class GenerationRunner:
                 state = stale_state.get(bundle_signature, {})
                 if int(state.get("stale_generations", 0)) >= BUNDLE_STALE_GENERATION_THRESHOLD:
                     pruned_reason = "stale_bundle_pruned"
+                elif bool(state.get("archive_evicted", False)):
+                    pruned_reason = "archive_eviction_pruned"
+                elif int(state.get("archive_underperform_streak", 0)) > 0 and bool(state.get("archive_admitted", False)):
+                    pruned_reason = "archive_underperform_pruned"
                 elif bool(state.get("archive_candidate_generations", 0)) and not bool(state.get("archive_admitted", False)):
                     pruned_reason = "archive_admission_pruned"
                 elif int(state.get("archive_decay_generations", 0)) >= BUNDLE_ARCHIVE_DECAY_PRUNE_GENERATION_THRESHOLD:
@@ -477,6 +504,8 @@ class GenerationRunner:
             "bundle_archive_pending_roles": sorted(bundle_archive_pending_roles),
             "bundle_archive_proving_roles": sorted(bundle_archive_proving_roles),
             "bundle_archive_post_admission_grace_roles": sorted(bundle_archive_post_admission_grace_roles),
+            "bundle_archive_underperform_roles": sorted(bundle_archive_underperform_roles),
+            "bundle_archive_eviction_roles": sorted(bundle_archive_eviction_roles),
             "bundle_archive_cooldown_fresh_admission_roles": sorted(bundle_archive_cooldown_fresh_admission_roles),
             "bundle_archive_cooldown_roles": sorted(bundle_archive_cooldown_roles),
             "bundle_archive_cooldown_long_lived_debt_roles": sorted(bundle_archive_cooldown_long_lived_debt_roles),
@@ -499,6 +528,25 @@ class GenerationRunner:
                     "bundle_state_by_role",
                     {},
                 )
+
+        role_survivor_public_benchmark: dict[str, float] = {}
+        clean_public_scores_by_role: dict[str, list[float]] = defaultdict(list)
+        for decision in selection:
+            if decision.eligible and decision.quarantine_status == QUARANTINE_CLEAN:
+                clean_public_scores_by_role[decision.role].append(decision.public_score)
+        for role, scores in clean_public_scores_by_role.items():
+            ordered_scores = sorted(scores, reverse=True)
+            survivor_window = max(
+                1,
+                min(
+                    len(ordered_scores),
+                    max(1, (self.config.roles.distribution.get(role, len(ordered_scores)) + 1) // 2),
+                ),
+            )
+            role_survivor_public_benchmark[role] = round(
+                statistics.fmean(ordered_scores[:survivor_window]),
+                4,
+            )
 
         decisions_by_bundle: dict[tuple[str, str], list[Any]] = defaultdict(list)
         for decision in selection:
@@ -542,7 +590,10 @@ class GenerationRunner:
                 prior_archive_post_admission_grace_remaining = int(
                     prior_state.get("archive_post_admission_grace_remaining", 0)
                 )
+                prior_archive_underperform_streak = int(prior_state.get("archive_underperform_streak", 0))
+                prior_archive_eviction_count = int(prior_state.get("archive_eviction_count", 0))
                 prior_archive_admitted = bool(prior_state.get("archive_admitted", False))
+                role_public_benchmark = role_survivor_public_benchmark.get(role, 0.0)
                 avg_public_score = round(
                     statistics.fmean([decision.public_score for decision in bundle_decisions]),
                     4,
@@ -570,11 +621,6 @@ class GenerationRunner:
                     and archive_proving_streak >= BUNDLE_ARCHIVE_ADMISSION_USEFUL_STREAK
                 )
                 archive_admission_converted = bool(not prior_archive_admitted and archive_admitted)
-                useful_clean = (
-                    archive_admitted
-                    and clean_win
-                    and avg_public_score >= BUNDLE_ARCHIVE_RETIREMENT_USEFUL_SCORE_FLOOR
-                )
                 clean_win_generations = int(prior_state.get("clean_win_generations", 0)) + int(clean_win)
                 preserved_generations = int(prior_state.get("preserved_generations", 0)) + int(preserved)
                 archive_candidate_generations = prior_archive_candidate_generations + int(archive_candidate)
@@ -588,6 +634,40 @@ class GenerationRunner:
                     BUNDLE_ARCHIVE_POST_ADMISSION_GRACE_GENERATIONS
                     if archive_admission_converted
                     else max(0, prior_archive_post_admission_grace_remaining - 1)
+                )
+                archive_underperform_margin = (
+                    round(max(0.0, role_public_benchmark - avg_public_score), 4)
+                    if archive_admitted and role_public_benchmark > 0
+                    else 0.0
+                )
+                archive_underperform = (
+                    archive_admitted
+                    and archive_post_admission_grace_remaining == 0
+                    and role_public_benchmark > 0
+                    and avg_public_score + BUNDLE_ARCHIVE_UNDERPERFORM_PUBLIC_SCORE_MARGIN < role_public_benchmark
+                )
+                archive_underperform_streak = (
+                    prior_archive_underperform_streak + 1
+                    if archive_underperform
+                    else 0
+                )
+                archive_evicted = bool(
+                    archive_admitted
+                    and archive_underperform_streak >= BUNDLE_ARCHIVE_UNDERPERFORM_EVICTION_STREAK
+                )
+                if archive_evicted:
+                    archive_admitted = False
+                    archive_admission_pending_generations = max(
+                        1,
+                        prior_archive_admission_pending_generations + 1,
+                    )
+                    archive_proving_streak = 0
+                    archive_generations = 0
+                    archive_post_admission_grace_remaining = 0
+                useful_clean = (
+                    archive_admitted
+                    and clean_win
+                    and avg_public_score >= BUNDLE_ARCHIVE_RETIREMENT_USEFUL_SCORE_FLOOR
                 )
                 ever_archived = archive_generations > 0 or archive_admitted
                 archive_useful_clean_streak = (
@@ -633,6 +713,11 @@ class GenerationRunner:
                     "archive_admission_converted": archive_admission_converted,
                     "archive_admitted": archive_admitted,
                     "archive_post_admission_grace_remaining": archive_post_admission_grace_remaining,
+                    "archive_underperform_streak": archive_underperform_streak,
+                    "archive_underperform_margin": archive_underperform_margin,
+                    "archive_survivor_public_benchmark": role_public_benchmark,
+                    "archive_evicted": archive_evicted,
+                    "archive_eviction_count": prior_archive_eviction_count + int(archive_evicted),
                     "retention_debt": retention_debt,
                     "archive_decay_debt": archive_decay_debt,
                     "archive_decay_generations": archive_decay_generations,
@@ -1348,6 +1433,35 @@ class GenerationRunner:
             for bundle_signature, state in role_states.items()
             if state["archive_post_admission_grace_remaining"] > 0
         ]
+        archive_underperform_bundles = [
+            {
+                "role": role,
+                "bundle_signature": bundle_signature,
+                "archive_underperform_streak": state["archive_underperform_streak"],
+                "archive_underperform_margin": state["archive_underperform_margin"],
+                "archive_survivor_public_benchmark": state["archive_survivor_public_benchmark"],
+                "archive_post_admission_grace_remaining": state["archive_post_admission_grace_remaining"],
+                "avg_public_score": state["avg_public_score"],
+            }
+            for role, role_states in bundle_state_by_role.items()
+            for bundle_signature, state in role_states.items()
+            if state["archive_underperform_streak"] > 0
+        ]
+        archive_evicted_bundles = [
+            {
+                "role": role,
+                "bundle_signature": bundle_signature,
+                "archive_underperform_streak": state["archive_underperform_streak"],
+                "archive_underperform_margin": state["archive_underperform_margin"],
+                "archive_survivor_public_benchmark": state["archive_survivor_public_benchmark"],
+                "archive_candidate_generations": state["archive_candidate_generations"],
+                "archive_admission_pending_generations": state["archive_admission_pending_generations"],
+                "avg_public_score": state["avg_public_score"],
+            }
+            for role, role_states in bundle_state_by_role.items()
+            for bundle_signature, state in role_states.items()
+            if state["archive_evicted"]
+        ]
         archive_admitted_bundles = [
             {
                 "role": role,
@@ -1357,6 +1471,9 @@ class GenerationRunner:
                 "archive_proving_streak": state["archive_proving_streak"],
                 "archive_admission_converted": state["archive_admission_converted"],
                 "archive_post_admission_grace_remaining": state["archive_post_admission_grace_remaining"],
+                "archive_underperform_streak": state["archive_underperform_streak"],
+                "archive_underperform_margin": state["archive_underperform_margin"],
+                "archive_survivor_public_benchmark": state["archive_survivor_public_benchmark"],
                 "archive_useful_clean_streak": state["archive_useful_clean_streak"],
                 "archive_retirement_credit": state["archive_retirement_credit"],
                 "avg_public_score": state["avg_public_score"],
@@ -1369,6 +1486,10 @@ class GenerationRunner:
             (item["role"], item["bundle_signature"])
             for item in previous_selection_summary.get("archive_proving_bundles", [])
         }
+        previous_cooldown_streak_by_role = previous_selection_summary.get(
+            "bundle_archive_cooldown_streak_by_role",
+            {},
+        )
         stale_bundles = [
             {
                 "role": role,
@@ -1454,6 +1575,29 @@ class GenerationRunner:
             if previous_proving_bundle_signatures
             else 0.0
         )
+        current_cooldown_roles = set(parent_pool_summary["bundle_archive_cooldown_roles"])
+        bundle_archive_cooldown_streak_by_role = {
+            role: (
+                int(previous_cooldown_streak_by_role.get(role, 0)) + 1
+                if role in current_cooldown_roles
+                else 0
+            )
+            for role in sorted(
+                set(previous_cooldown_streak_by_role)
+                | current_cooldown_roles
+                | set(parent_pool_summary["bundle_archive_candidate_roles"])
+            )
+        }
+        archive_eviction_roles = {item["role"] for item in archive_evicted_bundles}
+        bundle_archive_cooldown_recoveries = [
+            {
+                "role": role,
+                "cooldown_generations": int(previous_cooldown_streak_by_role.get(role, 0)),
+                "recovery_reason": "archive_eviction" if role in archive_eviction_roles else "debt_cleared",
+            }
+            for role in sorted(set(previous_cooldown_streak_by_role) - current_cooldown_roles)
+            if int(previous_cooldown_streak_by_role.get(role, 0)) > 0
+        ]
         selection_summary = {
             "eligible": sum(decision.eligible for decision in augmented_selection),
             "propagation_blocked": sum(decision.propagation_blocked for decision in augmented_selection),
@@ -1474,6 +1618,8 @@ class GenerationRunner:
             "bundle_archive_pending_roles": parent_pool_summary["bundle_archive_pending_roles"],
             "bundle_archive_proving_roles": parent_pool_summary["bundle_archive_proving_roles"],
             "bundle_archive_post_admission_grace_roles": parent_pool_summary["bundle_archive_post_admission_grace_roles"],
+            "bundle_archive_underperform_roles": parent_pool_summary["bundle_archive_underperform_roles"],
+            "bundle_archive_eviction_roles": parent_pool_summary["bundle_archive_eviction_roles"],
             "bundle_archive_cooldown_roles": parent_pool_summary["bundle_archive_cooldown_roles"],
             "bundle_archive_cooldown_fresh_admission_roles": parent_pool_summary[
                 "bundle_archive_cooldown_fresh_admission_roles"
@@ -1482,16 +1628,30 @@ class GenerationRunner:
                 "bundle_archive_cooldown_long_lived_debt_roles"
             ],
             "bundle_archive_cooldown_count": len(parent_pool_summary["bundle_archive_cooldown_roles"]),
+            "bundle_archive_cooldown_streak_by_role": bundle_archive_cooldown_streak_by_role,
+            "bundle_archive_cooldown_recoveries": bundle_archive_cooldown_recoveries,
+            "bundle_archive_cooldown_recovery_roles": [
+                item["role"] for item in bundle_archive_cooldown_recoveries
+            ],
+            "bundle_archive_cooldown_recovery_count": len(bundle_archive_cooldown_recoveries),
+            "bundle_archive_cooldown_recovery_max_generations": max(
+                (item["cooldown_generations"] for item in bundle_archive_cooldown_recoveries),
+                default=0,
+            ),
             "archive_admission_pending_bundles": archive_admission_pending_bundles,
             "archive_admission_pending_count": len(archive_admission_pending_bundles),
             "archive_proving_bundles": archive_proving_bundles,
             "archive_proving_count": len(archive_proving_bundles),
             "post_admission_grace_bundles": post_admission_grace_bundles,
             "post_admission_grace_count": len(post_admission_grace_bundles),
+            "archive_underperform_bundles": archive_underperform_bundles,
+            "archive_underperform_count": len(archive_underperform_bundles),
             "archive_admitted_bundles": archive_admitted_bundles,
             "archive_admitted_count": len(archive_admitted_bundles),
             "newly_admitted_bundles": newly_admitted_bundles,
             "newly_admitted_count": len(newly_admitted_bundles),
+            "archive_evicted_bundles": archive_evicted_bundles,
+            "archive_eviction_count": len(archive_evicted_bundles),
             "archive_admission_converted_bundles": archive_admission_converted_bundles,
             "archive_admission_converted_count": len(archive_admission_converted_bundles),
             "archive_admission_conversion_rate": archive_admission_conversion_rate,
@@ -1590,18 +1750,25 @@ class GenerationRunner:
                 f"- bundle_archive_pending_roles: {', '.join(summary['selection_summary'].get('bundle_archive_pending_roles', [])) or 'none'}",
                 f"- bundle_archive_proving_roles: {', '.join(summary['selection_summary'].get('bundle_archive_proving_roles', [])) or 'none'}",
                 f"- bundle_archive_post_admission_grace_roles: {', '.join(summary['selection_summary'].get('bundle_archive_post_admission_grace_roles', [])) or 'none'}",
+                f"- bundle_archive_underperform_roles: {', '.join(summary['selection_summary'].get('bundle_archive_underperform_roles', [])) or 'none'}",
+                f"- bundle_archive_eviction_roles: {', '.join(summary['selection_summary'].get('bundle_archive_eviction_roles', [])) or 'none'}",
                 f"- bundle_archive_cooldown_roles: {', '.join(summary['selection_summary'].get('bundle_archive_cooldown_roles', [])) or 'none'}",
                 f"- bundle_archive_cooldown_fresh_admission_roles: {', '.join(summary['selection_summary'].get('bundle_archive_cooldown_fresh_admission_roles', [])) or 'none'}",
                 f"- bundle_archive_cooldown_long_lived_debt_roles: {', '.join(summary['selection_summary'].get('bundle_archive_cooldown_long_lived_debt_roles', [])) or 'none'}",
+                f"- bundle_archive_cooldown_recovery_roles: {', '.join(summary['selection_summary'].get('bundle_archive_cooldown_recovery_roles', [])) or 'none'}",
                 f"- bundle_decay_prune_roles: {', '.join(summary['selection_summary'].get('bundle_decay_prune_roles', [])) or 'none'}",
                 f"- bundle_archive_lineages: {', '.join(summary['selection_summary'].get('bundle_archive_lineages', [])) or 'none'}",
                 f"- archive_admission_pending_count: {summary['selection_summary'].get('archive_admission_pending_count', 0)}",
                 f"- archive_proving_count: {summary['selection_summary'].get('archive_proving_count', 0)}",
+                f"- archive_underperform_count: {summary['selection_summary'].get('archive_underperform_count', 0)}",
                 f"- archive_admitted_count: {summary['selection_summary'].get('archive_admitted_count', 0)}",
                 f"- newly_admitted_count: {summary['selection_summary'].get('newly_admitted_count', 0)}",
                 f"- post_admission_grace_count: {summary['selection_summary'].get('post_admission_grace_count', 0)}",
+                f"- archive_eviction_count: {summary['selection_summary'].get('archive_eviction_count', 0)}",
                 f"- archive_admission_converted_count: {summary['selection_summary'].get('archive_admission_converted_count', 0)}",
                 f"- archive_failed_admission_count: {summary['selection_summary'].get('archive_failed_admission_count', 0)}",
+                f"- bundle_archive_cooldown_recovery_count: {summary['selection_summary'].get('bundle_archive_cooldown_recovery_count', 0)}",
+                f"- bundle_archive_cooldown_recovery_max_generations: {summary['selection_summary'].get('bundle_archive_cooldown_recovery_max_generations', 0)}",
                 f"- pruned_bundle_count: {summary['selection_summary'].get('pruned_bundle_count', 0)}",
                 f"- stale_bundle_count: {summary['selection_summary'].get('stale_bundle_count', 0)}",
                 f"- decaying_bundle_count: {summary['selection_summary'].get('decaying_bundle_count', 0)}",
@@ -1650,12 +1817,18 @@ class GenerationRunner:
             lines.append(f"- archive_proving_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_post_admission_grace_roles", []):
             lines.append(f"- archive_post_admission_grace_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_underperform_roles", []):
+            lines.append(f"- archive_underperform_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_eviction_roles", []):
+            lines.append(f"- archive_eviction_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_cooldown_roles", []):
             lines.append(f"- archive_cooldown_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_cooldown_fresh_admission_roles", []):
             lines.append(f"- archive_cooldown_fresh_admission_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_cooldown_long_lived_debt_roles", []):
             lines.append(f"- archive_cooldown_long_lived_debt_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_cooldown_recovery_roles", []):
+            lines.append(f"- archive_cooldown_recovery_role:{role}")
         for role in summary["selection_summary"].get("bundle_decay_prune_roles", []):
             lines.append(f"- archive_decay_prune_role:{role}")
         for item in summary["selection_summary"].get("archive_admission_pending_bundles", []):
@@ -1681,6 +1854,24 @@ class GenerationRunner:
                 f"grace_remaining={item.get('archive_post_admission_grace_remaining', 0)} "
                 f"avg_public_score={item.get('avg_public_score', 0.0)}"
             )
+        for item in summary["selection_summary"].get("archive_underperform_bundles", []):
+            lines.append(
+                f"- underperform:{item['role']}:{item['bundle_signature']} "
+                f"streak={item.get('archive_underperform_streak', 0)} "
+                f"margin={item.get('archive_underperform_margin', 0.0)} "
+                f"benchmark={item.get('archive_survivor_public_benchmark', 0.0)} "
+                f"grace_remaining={item.get('archive_post_admission_grace_remaining', 0)} "
+                f"avg_public_score={item.get('avg_public_score', 0.0)}"
+            )
+        for item in summary["selection_summary"].get("archive_evicted_bundles", []):
+            lines.append(
+                f"- evicted:{item['role']}:{item['bundle_signature']} "
+                f"streak={item.get('archive_underperform_streak', 0)} "
+                f"margin={item.get('archive_underperform_margin', 0.0)} "
+                f"benchmark={item.get('archive_survivor_public_benchmark', 0.0)} "
+                f"pending_generations={item.get('archive_admission_pending_generations', 0)} "
+                f"avg_public_score={item.get('avg_public_score', 0.0)}"
+            )
         for item in summary["selection_summary"].get("archive_admitted_bundles", []):
             lines.append(
                 f"- admission_accepted:{item['role']}:{item['bundle_signature']} "
@@ -1688,6 +1879,9 @@ class GenerationRunner:
                 f"candidate_generations={item['archive_candidate_generations']} "
                 f"proving_streak={item.get('archive_proving_streak', 0)} "
                 f"grace_remaining={item.get('archive_post_admission_grace_remaining', 0)} "
+                f"underperform_streak={item.get('archive_underperform_streak', 0)} "
+                f"underperform_margin={item.get('archive_underperform_margin', 0.0)} "
+                f"benchmark={item.get('archive_survivor_public_benchmark', 0.0)} "
                 f"converted={str(item.get('archive_admission_converted', False)).lower()} "
                 f"useful_streak={item.get('archive_useful_clean_streak', 0)} "
                 f"retirement_credit={item.get('archive_retirement_credit', 0)} "
@@ -1729,6 +1923,12 @@ class GenerationRunner:
                 f"retirement_credit={item['archive_retirement_credit']} "
                 f"archive_decay_debt={item['archive_decay_debt']} "
                 f"avg_public_score={item['avg_public_score']}"
+            )
+        for item in summary["selection_summary"].get("bundle_archive_cooldown_recoveries", []):
+            lines.append(
+                f"- cooldown_recovered:{item['role']} "
+                f"generations={item.get('cooldown_generations', 0)} "
+                f"reason={item.get('recovery_reason', 'debt_cleared')}"
             )
         lines.extend(["", "## Monoculture", ""])
         for role, value in summary["selection_summary"].get("role_monoculture_index", {}).items():

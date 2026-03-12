@@ -457,6 +457,14 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     "bundle_archive_post_admission_grace_roles",
                     [],
                 ),
+                "bundle_archive_underperform_roles": selection_summary.get(
+                    "bundle_archive_underperform_roles",
+                    [],
+                ),
+                "bundle_archive_eviction_roles": selection_summary.get(
+                    "bundle_archive_eviction_roles",
+                    [],
+                ),
                 "bundle_archive_cooldown_roles": selection_summary.get("bundle_archive_cooldown_roles", []),
                 "bundle_archive_cooldown_fresh_admission_roles": selection_summary.get(
                     "bundle_archive_cooldown_fresh_admission_roles",
@@ -466,12 +474,26 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     "bundle_archive_cooldown_long_lived_debt_roles",
                     [],
                 ),
+                "bundle_archive_cooldown_recovery_roles": selection_summary.get(
+                    "bundle_archive_cooldown_recovery_roles",
+                    [],
+                ),
                 "bundle_archive_cooldown_count": selection_summary.get("bundle_archive_cooldown_count", 0),
+                "bundle_archive_cooldown_recovery_count": selection_summary.get(
+                    "bundle_archive_cooldown_recovery_count",
+                    0,
+                ),
+                "bundle_archive_cooldown_recovery_max_generations": selection_summary.get(
+                    "bundle_archive_cooldown_recovery_max_generations",
+                    0,
+                ),
                 "archive_admission_pending_count": selection_summary.get("archive_admission_pending_count", 0),
                 "archive_proving_count": selection_summary.get("archive_proving_count", 0),
+                "archive_underperform_count": selection_summary.get("archive_underperform_count", 0),
                 "archive_admitted_count": selection_summary.get("archive_admitted_count", 0),
                 "newly_admitted_count": selection_summary.get("newly_admitted_count", 0),
                 "post_admission_grace_count": selection_summary.get("post_admission_grace_count", 0),
+                "archive_eviction_count": selection_summary.get("archive_eviction_count", 0),
                 "archive_admission_conversion_rate": selection_summary.get("archive_admission_conversion_rate", 0.0),
                 "archive_failed_admission_count": selection_summary.get("archive_failed_admission_count", 0),
                 "bundle_decay_prune_roles": selection_summary.get("bundle_decay_prune_roles", []),
@@ -549,9 +571,11 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             last["archive_admission_pending_count"] - first["archive_admission_pending_count"]
         )
         archive_proving_delta = last["archive_proving_count"] - first["archive_proving_count"]
+        archive_underperform_delta = last["archive_underperform_count"] - first["archive_underperform_count"]
         archive_admitted_delta = last["archive_admitted_count"] - first["archive_admitted_count"]
         newly_admitted_delta = last["newly_admitted_count"] - first["newly_admitted_count"]
         post_admission_grace_delta = last["post_admission_grace_count"] - first["post_admission_grace_count"]
+        archive_eviction_delta = last["archive_eviction_count"] - first["archive_eviction_count"]
         archive_conversion_delta = round(
             last["archive_admission_conversion_rate"] - first["archive_admission_conversion_rate"],
             4,
@@ -559,6 +583,9 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         archive_failed_delta = last["archive_failed_admission_count"] - first["archive_failed_admission_count"]
         bundle_archive_cooldown_delta = (
             last["bundle_archive_cooldown_count"] - first["bundle_archive_cooldown_count"]
+        )
+        bundle_archive_cooldown_recovery_delta = (
+            last["bundle_archive_cooldown_recovery_count"] - first["bundle_archive_cooldown_recovery_count"]
         )
         bundle_decay_prune_delta = last["bundle_decay_prune_count"] - first["bundle_decay_prune_count"]
         stale_bundle_delta = last["stale_bundle_count"] - first["stale_bundle_count"]
@@ -632,6 +659,16 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             notes.append(f"Archive proving pressure fell by {-archive_proving_delta} bundles across the batch.")
         else:
             notes.append("Archive proving pressure stayed flat across the batch.")
+        if archive_underperform_delta > 0:
+            notes.append(
+                f"Archive underperformance pressure increased by {archive_underperform_delta} bundles across the batch."
+            )
+        elif archive_underperform_delta < 0:
+            notes.append(
+                f"Archive underperformance pressure fell by {-archive_underperform_delta} bundles across the batch."
+            )
+        else:
+            notes.append("Archive underperformance pressure stayed flat across the batch.")
         if archive_admitted_delta > 0:
             notes.append(f"Archive admissions increased by {archive_admitted_delta} bundles across the batch.")
         elif archive_admitted_delta < 0:
@@ -654,6 +691,12 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             )
         else:
             notes.append("Post-admission grace coverage stayed flat across the batch.")
+        if archive_eviction_delta > 0:
+            notes.append(f"Archive evictions increased by {archive_eviction_delta} bundles across the batch.")
+        elif archive_eviction_delta < 0:
+            notes.append(f"Archive evictions fell by {-archive_eviction_delta} bundles across the batch.")
+        else:
+            notes.append("Archive evictions stayed flat across the batch.")
         if archive_conversion_delta > 0:
             notes.append(f"Archive admission conversion rate increased by {archive_conversion_delta} across the batch.")
         elif archive_conversion_delta < 0:
@@ -672,6 +715,16 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             notes.append(f"Archive cooldown pressure fell by {-bundle_archive_cooldown_delta} roles across the batch.")
         else:
             notes.append("Archive cooldown pressure stayed flat across the batch.")
+        if bundle_archive_cooldown_recovery_delta > 0:
+            notes.append(
+                f"Archive cooldown recoveries increased by {bundle_archive_cooldown_recovery_delta} roles across the batch."
+            )
+        elif bundle_archive_cooldown_recovery_delta < 0:
+            notes.append(
+                f"Archive cooldown recoveries fell by {-bundle_archive_cooldown_recovery_delta} roles across the batch."
+            )
+        else:
+            notes.append("Archive cooldown recoveries stayed flat across the batch.")
         if bundle_decay_prune_delta > 0:
             notes.append(f"Archive decay pruning expanded to {bundle_decay_prune_delta} more roles across the batch.")
         elif bundle_decay_prune_delta < 0:
@@ -762,12 +815,16 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"bundle_archive_count={metric['bundle_archive_count']} "
             f"archive_admission_pending_count={metric['archive_admission_pending_count']} "
             f"archive_proving_count={metric['archive_proving_count']} "
+            f"archive_underperform_count={metric['archive_underperform_count']} "
             f"archive_admitted_count={metric['archive_admitted_count']} "
             f"newly_admitted_count={metric['newly_admitted_count']} "
             f"post_admission_grace_count={metric['post_admission_grace_count']} "
+            f"archive_eviction_count={metric['archive_eviction_count']} "
             f"archive_admission_conversion_rate={metric['archive_admission_conversion_rate']} "
             f"archive_failed_admission_count={metric['archive_failed_admission_count']} "
             f"bundle_archive_cooldown_count={metric['bundle_archive_cooldown_count']} "
+            f"bundle_archive_cooldown_recovery_count={metric['bundle_archive_cooldown_recovery_count']} "
+            f"bundle_archive_cooldown_recovery_max_generations={metric['bundle_archive_cooldown_recovery_max_generations']} "
             f"bundle_decay_prune_count={metric['bundle_decay_prune_count']} "
             f"stale_bundle_count={metric['stale_bundle_count']} "
             f"decaying_bundle_count={metric['decaying_bundle_count']} "
@@ -800,6 +857,16 @@ def render_experiment_report(report: dict[str, Any]) -> str:
                 "  bundle_archive_post_admission_grace_roles="
                 + ",".join(metric["bundle_archive_post_admission_grace_roles"])
             )
+        if metric["bundle_archive_underperform_roles"]:
+            lines.append(
+                "  bundle_archive_underperform_roles="
+                + ",".join(metric["bundle_archive_underperform_roles"])
+            )
+        if metric["bundle_archive_eviction_roles"]:
+            lines.append(
+                "  bundle_archive_eviction_roles="
+                + ",".join(metric["bundle_archive_eviction_roles"])
+            )
         if metric["bundle_archive_cooldown_roles"]:
             lines.append(
                 f"  bundle_archive_cooldown_roles={','.join(metric['bundle_archive_cooldown_roles'])}"
@@ -813,6 +880,11 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             lines.append(
                 "  bundle_archive_cooldown_long_lived_debt_roles="
                 + ",".join(metric["bundle_archive_cooldown_long_lived_debt_roles"])
+            )
+        if metric["bundle_archive_cooldown_recovery_roles"]:
+            lines.append(
+                "  bundle_archive_cooldown_recovery_roles="
+                + ",".join(metric["bundle_archive_cooldown_recovery_roles"])
             )
         if metric["bundle_decay_prune_roles"]:
             lines.append(
