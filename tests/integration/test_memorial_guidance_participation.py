@@ -91,3 +91,20 @@ def test_steward_and_archivist_lineages_stop_failing_correction_acceptance(tmp_p
             assert not bad_reviews
     finally:
         storage.close()
+
+
+def test_all_citizens_receive_a_turn_after_inheritance(tmp_path: Path) -> None:
+    config = _full_population_config(tmp_path)
+    storage = StorageManager(root_dir=config.storage.root_dir, db_path=config.storage.db_path)
+    provider = build_provider(config.provider.name, config.provider.model)
+    try:
+        runner = GenerationRunner(config=config, storage=storage, provider=provider, repo_root=REPO_ROOT)
+        runner.run(generation_id=1)
+        runner.run(generation_id=2)
+
+        citizens = [agent for agent in storage.list_generation_agents(2) if agent.role == "citizen"]
+        assert len(citizens) == 6
+        for citizen in citizens:
+            assert storage.read_agent_log(2, citizen.agent_id), citizen.agent_id
+    finally:
+        storage.close()

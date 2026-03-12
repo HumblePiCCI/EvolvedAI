@@ -35,7 +35,17 @@ class SharedNotebookV0(BaseWorld):
         "adversary": "Apply bounded pressure that exposes bluffing or weak governance.",
     }
 
-    STEP_ROLE_SEQUENCE = ("citizen", "judge", "citizen", "steward", "adversary", "citizen", "judge", "archivist")
+    STEP_ROLE_SEQUENCE = (
+        "citizen",
+        "judge",
+        "citizen",
+        "steward",
+        "adversary",
+        "citizen",
+        "judge",
+        "archivist",
+        "steward",
+    )
 
     def __init__(self, *, root_dir, generation_id: int, episode_index: int, task_prompt: str, max_steps: int) -> None:
         super().__init__(
@@ -152,26 +162,48 @@ class SharedNotebookV0(BaseWorld):
                 continue
             target_agent_id = item.get("target_agent_id")
             candidate = self.agent_lookup.get(target_agent_id) if isinstance(target_agent_id, str) else None
-            if candidate is not None and candidate.agent_id != last_actor_id:
+            if candidate is not None and candidate.role == "citizen" and candidate.agent_id != last_actor_id:
+                return candidate
+        return None
+
+    def _oldest_open_candidate_for_role(
+        self,
+        role: str,
+        *,
+        last_actor_id: str | None = None,
+    ) -> Any | None:
+        for collection in (self.correction_queue, self.clarification_requests):
+            for item in collection:
+                if item.get("status") != "open":
+                    continue
+                target_agent_id = item.get("target_agent_id")
+                candidate = self.agent_lookup.get(target_agent_id) if isinstance(target_agent_id, str) else None
+                if candidate is None or candidate.role != role or candidate.agent_id == last_actor_id:
+                    continue
                 return candidate
         return None
 
     def select_next_agent(self, agents: list[Any], step_index: int, last_actor_id: str | None = None) -> Any | None:
-        for item in self.correction_queue:
-            if item.get("status") == "open":
-                target_agent_id = item.get("target_agent_id")
-                candidate = self.agent_lookup.get(target_agent_id) if isinstance(target_agent_id, str) else None
-                if candidate is not None and candidate.agent_id != last_actor_id:
-                    return candidate
-
         preferred_role = self.STEP_ROLE_SEQUENCE[step_index % len(self.STEP_ROLE_SEQUENCE)]
         if preferred_role == "citizen":
             clarification_candidate = self._oldest_open_clarification_candidate(last_actor_id=last_actor_id)
             if clarification_candidate is not None:
                 return clarification_candidate
+        else:
+            correction_candidate = self._oldest_open_candidate_for_role(preferred_role, last_actor_id=last_actor_id)
+            if correction_candidate is not None:
+                return correction_candidate
         candidate = self._next_agent_for_role(preferred_role, agents, last_actor_id=last_actor_id)
         if candidate is not None:
             return candidate
+
+        fallback_candidate = self._oldest_open_candidate_for_role("citizen", last_actor_id=last_actor_id)
+        if fallback_candidate is not None:
+            return fallback_candidate
+        for role in self.ROLE_ACTIONS:
+            fallback_candidate = self._oldest_open_candidate_for_role(role, last_actor_id=last_actor_id)
+            if fallback_candidate is not None:
+                return fallback_candidate
 
         for agent in agents:
             if agent.agent_id != last_actor_id:

@@ -177,3 +177,105 @@ def test_steward_can_resolve_targeted_correction(tmp_path) -> None:
     assert any(event["event_type"] == "correction_enqueued" for event in critique["world_events"])
     assert any(event["event_type"] == "correction_resolved" for event in response["world_events"])
     assert world.episode_summary()["open_corrections"] == 0
+
+
+def test_citizen_slot_is_not_stolen_by_steward_correction(tmp_path) -> None:
+    citizen_a = _agent("agent-citizen-a", "citizen")
+    citizen_b = _agent("agent-citizen-b", "citizen")
+    judge = _agent("agent-judge", "judge")
+    steward = _agent("agent-steward", "steward")
+    adversary = _agent("agent-adversary", "adversary")
+    archivist = _agent("agent-archivist", "archivist")
+    agents = [citizen_a, citizen_b, judge, steward, archivist, adversary]
+    world = SharedNotebookV0(
+        root_dir=tmp_path / "data",
+        generation_id=1,
+        episode_index=0,
+        task_prompt="test task",
+        max_steps=10,
+    )
+    world.bind_population(agents)
+
+    world.apply_action(
+        agent=citizen_a,
+        parsed_action={
+            "action": "propose_fact",
+            "claim": "A bounded claim.",
+            "uncertainty": "medium",
+            "confidence": 0.6,
+            "evidence": "public note",
+            "citations": [],
+            "target_artifact_id": None,
+            "next_step": "wait for review",
+        },
+        artifact_id="art-citizen-a",
+        step_index=0,
+    )
+    world.apply_action(
+        agent=judge,
+        parsed_action={
+            "action": "request_clarification",
+            "claim": "Clarify the bounded claim.",
+            "uncertainty": "medium",
+            "confidence": 0.6,
+            "evidence": "review",
+            "citations": ["art-citizen-a"],
+            "target_artifact_id": "art-citizen-a",
+            "next_step": "answer directly",
+        },
+        artifact_id="art-judge",
+        step_index=1,
+    )
+    world.apply_action(
+        agent=citizen_a,
+        parsed_action={
+            "action": "respond_to_correction",
+            "claim": "I am narrowing the claim.",
+            "uncertainty": "explicit",
+            "confidence": 0.5,
+            "evidence": "correction response",
+            "citations": ["art-citizen-a"],
+            "target_artifact_id": "art-citizen-a",
+            "next_step": "updated note",
+        },
+        artifact_id="art-citizen-a-fix",
+        step_index=2,
+    )
+    world.apply_action(
+        agent=steward,
+        parsed_action={
+            "action": "flag_risk",
+            "claim": "A stewardship risk note.",
+            "uncertainty": "medium",
+            "confidence": 0.55,
+            "evidence": "steward review",
+            "citations": [],
+            "target_artifact_id": None,
+            "next_step": "watch the notebook",
+        },
+        artifact_id="art-steward",
+        step_index=3,
+    )
+    world.apply_action(
+        agent=adversary,
+        parsed_action={
+            "action": "critique_claim",
+            "claim": "The stewardship note needs a direct response.",
+            "uncertainty": "medium",
+            "confidence": 0.6,
+            "evidence": "pressure test",
+            "citations": ["art-steward"],
+            "target_artifact_id": "art-steward",
+            "next_step": "respond to the correction",
+        },
+        artifact_id="art-adversary",
+        step_index=4,
+    )
+
+    citizen_slot = world.select_next_agent(agents, step_index=5, last_actor_id=adversary.agent_id)
+    assert citizen_slot is not None
+    assert citizen_slot.role == "citizen"
+
+    later_steward_slot = world.select_next_agent(agents, step_index=8, last_actor_id=archivist.agent_id)
+    assert later_steward_slot is not None
+    assert later_steward_slot.role == "steward"
