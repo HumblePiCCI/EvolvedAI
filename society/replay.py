@@ -159,6 +159,8 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             lines.append(f"  archive_reentry_block_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_escalated_backoff_roles", []):
             lines.append(f"  archive_escalated_backoff_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_coexistence_budget_roles", []):
+            lines.append(f"  archive_coexistence_budget_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_underperform_roles", []):
             lines.append(f"  archive_underperform_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_eviction_roles", []):
@@ -173,6 +175,10 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             lines.append(f"  archive_cooldown_fresh_admission_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_cooldown_long_lived_debt_roles", []):
             lines.append(f"  archive_cooldown_long_lived_debt_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_cooldown_true_overload_roles", []):
+            lines.append(f"  archive_cooldown_true_overload_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_cooldown_avoidable_duplicate_roles", []):
+            lines.append(f"  archive_cooldown_avoidable_duplicate_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_cooldown_recovery_roles", []):
             lines.append(f"  archive_cooldown_recovery_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_decay_prune_roles", []):
@@ -240,6 +246,18 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
         )
         lines.append(
             f"  archive_cooldown_count:{summary.get('selection_summary', {}).get('bundle_archive_cooldown_count', 0)}"
+        )
+        lines.append(
+            "  archive_coexistence_budget_count:"
+            f"{summary.get('selection_summary', {}).get('bundle_archive_coexistence_budget_count', 0)}"
+        )
+        lines.append(
+            "  archive_cooldown_true_overload_count:"
+            f"{summary.get('selection_summary', {}).get('bundle_archive_cooldown_true_overload_count', 0)}"
+        )
+        lines.append(
+            "  archive_cooldown_avoidable_duplicate_count:"
+            f"{summary.get('selection_summary', {}).get('bundle_archive_cooldown_avoidable_duplicate_count', 0)}"
         )
         lines.append(
             "  archive_cooldown_recovery_count:"

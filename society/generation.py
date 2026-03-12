@@ -11,6 +11,8 @@ from society.constants import (
     ACTIVE_STATUS,
     BUNDLE_ARCHIVE_ADMISSION_PUBLIC_SCORE_FLOOR,
     BUNDLE_ARCHIVE_ADMISSION_USEFUL_STREAK,
+    BUNDLE_ARCHIVE_COEXISTENCE_BUDGET_GENERATIONS,
+    BUNDLE_ARCHIVE_COEXISTENCE_REQUIRED_LANES,
     BUNDLE_ARCHIVE_COOLDOWN_DEBT_THRESHOLD,
     BUNDLE_ARCHIVE_DECAY_PRUNE_GENERATION_THRESHOLD,
     BUNDLE_ARCHIVE_DECAY_PRUNE_SLOTS,
@@ -370,6 +372,14 @@ class GenerationRunner:
                 for state in (bundle_state_by_role or {}).get(role, {}).values()
             )
         }
+        bundle_archive_coexistence_budget_roles = {
+            role
+            for role in bundle_archive_candidate_roles
+            if any(
+                int(state.get("archive_coexistence_budget_remaining", 0)) > 0
+                for state in (bundle_state_by_role or {}).get(role, {}).values()
+            )
+        }
         bundle_archive_underperform_roles = {
             role
             for role in bundle_archive_candidate_roles
@@ -396,31 +406,14 @@ class GenerationRunner:
             for role, role_states in (bundle_state_by_role or {}).items()
             if any(bool(state.get("archive_retired", False)) for state in role_states.values())
         }
-        bundle_archive_cooldown_fresh_admission_roles = {
-            role
-            for role in bundle_archive_candidate_roles
-            if any(
-                int(state.get("archive_post_admission_grace_remaining", 0)) > 0
-                and max(
-                    0,
-                    int(state.get("archive_generations", 0))
-                    - int(state.get("archive_retirement_credit", 0)),
-                ) >= BUNDLE_ARCHIVE_COOLDOWN_DEBT_THRESHOLD
-                for state in (bundle_state_by_role or {}).get(role, {}).values()
-            )
-        }
-        bundle_archive_cooldown_roles = {
-            role
-            for role in bundle_archive_candidate_roles
-            if any(
-                int(state.get("archive_decay_debt", 0)) >= BUNDLE_ARCHIVE_COOLDOWN_DEBT_THRESHOLD
-                for state in (bundle_state_by_role or {}).get(role, {}).values()
-            )
-        }
-        bundle_archive_cooldown_long_lived_debt_roles = set(bundle_archive_cooldown_roles)
-        bundle_archive_roles = (
+        bundle_archive_cooldown_fresh_admission_roles: set[str] = set()
+        bundle_archive_cooldown_roles: set[str] = set()
+        bundle_archive_cooldown_long_lived_debt_roles: set[str] = set()
+        bundle_archive_cooldown_true_overload_roles: set[str] = set()
+        bundle_archive_cooldown_avoidable_duplicate_roles: set[str] = set()
+        bundle_archive_roles: set[str] = set()
+        preliminary_bundle_archive_roles = (
             bundle_archive_candidate_roles
-            - bundle_archive_cooldown_roles
             - bundle_archive_pending_roles
             - bundle_archive_underperform_roles
         )
@@ -445,7 +438,9 @@ class GenerationRunner:
             pool = build_parent_candidate_pool(
                 candidates,
                 slot_count=self.config.roles.distribution.get(role, len(candidates)),
-                exploration_slots=BUNDLE_ARCHIVE_EXPLORATION_SLOTS if role in bundle_archive_roles else 0,
+                exploration_slots=(
+                    BUNDLE_ARCHIVE_EXPLORATION_SLOTS if role in preliminary_bundle_archive_roles else 0
+                ),
                 reserve_penalty_slots=BUNDLE_ARCHIVE_DECAY_PRUNE_SLOTS if role in bundle_decay_prune_roles else 0,
                 bundle_state_by_signature=(
                     {} if bundle_state_by_role is None else bundle_state_by_role.get(role, {})
@@ -469,6 +464,73 @@ class GenerationRunner:
                 round(max(bundle_counts.values()) / len(pool), 4) if bundle_counts and pool else 0.0
             )
             stale_state = {} if bundle_state_by_role is None else bundle_state_by_role.get(role, {})
+            admitted_selected = [
+                signature
+                for signature in selected_bundles
+                if bool(stale_state.get(signature, {}).get("archive_admitted", False))
+            ]
+            exploratory_selected = [
+                signature
+                for signature in selected_bundles
+                if (
+                    int(stale_state.get(signature, {}).get("archive_candidate_generations", 0)) > 0
+                    and not bool(stale_state.get(signature, {}).get("archive_admitted", False))
+                    and not bool(stale_state.get(signature, {}).get("archive_retired", False))
+                )
+            ]
+            incumbent_selected = [
+                signature
+                for signature in selected_bundles
+                if (
+                    int(stale_state.get(signature, {}).get("archive_candidate_generations", 0)) == 0
+                    and not bool(stale_state.get(signature, {}).get("archive_admitted", False))
+                    and not bool(stale_state.get(signature, {}).get("archive_retired", False))
+                )
+            ]
+            non_archive_duplicate_count = sum(
+                count - 1
+                for bundle_signature, count in bundle_counts.items()
+                if (
+                    count > 1
+                    and not bool(stale_state.get(bundle_signature, {}).get("archive_admitted", False))
+                )
+            )
+            cooldown_fresh_admission = any(
+                int(state.get("archive_post_admission_grace_remaining", 0)) > 0
+                and max(
+                    0,
+                    int(state.get("archive_generations", 0))
+                    - int(state.get("archive_retirement_credit", 0)),
+                ) >= BUNDLE_ARCHIVE_COOLDOWN_DEBT_THRESHOLD
+                for state in stale_state.values()
+            )
+            cooldown_candidate = any(
+                int(state.get("archive_decay_debt", 0)) >= BUNDLE_ARCHIVE_COOLDOWN_DEBT_THRESHOLD
+                for state in stale_state.values()
+            )
+            coexistence_budget_active = any(
+                int(state.get("archive_coexistence_budget_remaining", 0)) > 0
+                for state in stale_state.values()
+            )
+            coexistence_supported = bool(
+                cooldown_candidate
+                and coexistence_budget_active
+                and len(pool) >= BUNDLE_ARCHIVE_COEXISTENCE_REQUIRED_LANES
+                and admitted_selected
+                and exploratory_selected
+                and incumbent_selected
+            )
+            if cooldown_candidate:
+                if coexistence_supported:
+                    if non_archive_duplicate_count > 0:
+                        bundle_archive_cooldown_avoidable_duplicate_roles.add(role)
+                else:
+                    bundle_archive_cooldown_roles.add(role)
+                    bundle_archive_cooldown_true_overload_roles.add(role)
+                    if cooldown_fresh_admission:
+                        bundle_archive_cooldown_fresh_admission_roles.add(role)
+                    else:
+                        bundle_archive_cooldown_long_lived_debt_roles.add(role)
             for bundle_signature in sorted(candidate_bundles - selected_bundles):
                 state = stale_state.get(bundle_signature, {})
                 if int(state.get("stale_generations", 0)) >= BUNDLE_STALE_GENERATION_THRESHOLD:
@@ -510,6 +572,9 @@ class GenerationRunner:
                         "archive_post_admission_grace_remaining": int(
                             state.get("archive_post_admission_grace_remaining", 0)
                         ),
+                        "archive_coexistence_budget_remaining": int(
+                            state.get("archive_coexistence_budget_remaining", 0)
+                        ),
                         "archive_reentry_backoff_remaining": int(
                             state.get("archive_reentry_backoff_remaining", 0)
                         ),
@@ -549,6 +614,13 @@ class GenerationRunner:
                     }
                 )
 
+        bundle_archive_roles = (
+            bundle_archive_candidate_roles
+            - bundle_archive_cooldown_roles
+            - bundle_archive_pending_roles
+            - bundle_archive_underperform_roles
+        )
+
         return {
             "pools_by_role": pools_by_role,
             "role_parent_bundle_concentration_index": role_parent_bundle_concentration_index,
@@ -562,6 +634,7 @@ class GenerationRunner:
             "bundle_archive_reentry_backoff_roles": sorted(bundle_archive_reentry_backoff_roles),
             "bundle_archive_reentry_block_roles": sorted(bundle_archive_reentry_block_roles),
             "bundle_archive_escalated_backoff_roles": sorted(bundle_archive_escalated_backoff_roles),
+            "bundle_archive_coexistence_budget_roles": sorted(bundle_archive_coexistence_budget_roles),
             "bundle_archive_underperform_roles": sorted(bundle_archive_underperform_roles),
             "bundle_archive_eviction_roles": sorted(bundle_archive_eviction_roles),
             "bundle_archive_repeat_eviction_roles": sorted(bundle_archive_repeat_eviction_roles),
@@ -569,6 +642,10 @@ class GenerationRunner:
             "bundle_archive_cooldown_fresh_admission_roles": sorted(bundle_archive_cooldown_fresh_admission_roles),
             "bundle_archive_cooldown_roles": sorted(bundle_archive_cooldown_roles),
             "bundle_archive_cooldown_long_lived_debt_roles": sorted(bundle_archive_cooldown_long_lived_debt_roles),
+            "bundle_archive_cooldown_true_overload_roles": sorted(bundle_archive_cooldown_true_overload_roles),
+            "bundle_archive_cooldown_avoidable_duplicate_roles": sorted(
+                bundle_archive_cooldown_avoidable_duplicate_roles
+            ),
             "bundle_decay_prune_roles": sorted(bundle_decay_prune_roles),
         }
 
@@ -649,6 +726,9 @@ class GenerationRunner:
                 prior_archive_proving_streak = int(prior_state.get("archive_proving_streak", 0))
                 prior_archive_post_admission_grace_remaining = int(
                     prior_state.get("archive_post_admission_grace_remaining", 0)
+                )
+                prior_archive_coexistence_budget_remaining = int(
+                    prior_state.get("archive_coexistence_budget_remaining", 0)
                 )
                 prior_archive_reentry_backoff_remaining = int(
                     prior_state.get("archive_reentry_backoff_remaining", 0)
@@ -793,10 +873,16 @@ class GenerationRunner:
                     if archive_reentry_converted
                     else None
                 )
+                archive_coexistence_budget_remaining = (
+                    BUNDLE_ARCHIVE_COEXISTENCE_BUDGET_GENERATIONS
+                    if archive_reentry_converted
+                    else max(0, prior_archive_coexistence_budget_remaining - 1)
+                )
                 if archive_retired:
                     archive_candidate_generations = prior_archive_candidate_generations
                     archive_admission_pending_generations = 0
                     archive_proving_streak = 0
+                    archive_coexistence_budget_remaining = 0
                 useful_clean = (
                     archive_admitted
                     and clean_win
@@ -846,6 +932,7 @@ class GenerationRunner:
                     "archive_admission_converted": archive_admission_converted,
                     "archive_admitted": archive_admitted,
                     "archive_post_admission_grace_remaining": archive_post_admission_grace_remaining,
+                    "archive_coexistence_budget_remaining": archive_coexistence_budget_remaining,
                     "archive_reentry_backoff_remaining": archive_reentry_backoff_remaining,
                     "archive_reentry_backoff_target": archive_reentry_backoff_target,
                     "archive_reentry_required_proving_streak": archive_reentry_required_proving_streak,
@@ -1851,6 +1938,7 @@ class GenerationRunner:
             "bundle_archive_reentry_backoff_roles": parent_pool_summary["bundle_archive_reentry_backoff_roles"],
             "bundle_archive_reentry_block_roles": parent_pool_summary["bundle_archive_reentry_block_roles"],
             "bundle_archive_escalated_backoff_roles": parent_pool_summary["bundle_archive_escalated_backoff_roles"],
+            "bundle_archive_coexistence_budget_roles": parent_pool_summary["bundle_archive_coexistence_budget_roles"],
             "bundle_archive_underperform_roles": parent_pool_summary["bundle_archive_underperform_roles"],
             "bundle_archive_eviction_roles": parent_pool_summary["bundle_archive_eviction_roles"],
             "bundle_archive_repeat_eviction_roles": parent_pool_summary["bundle_archive_repeat_eviction_roles"],
@@ -1862,7 +1950,22 @@ class GenerationRunner:
             "bundle_archive_cooldown_long_lived_debt_roles": parent_pool_summary[
                 "bundle_archive_cooldown_long_lived_debt_roles"
             ],
+            "bundle_archive_cooldown_true_overload_roles": parent_pool_summary[
+                "bundle_archive_cooldown_true_overload_roles"
+            ],
+            "bundle_archive_cooldown_avoidable_duplicate_roles": parent_pool_summary[
+                "bundle_archive_cooldown_avoidable_duplicate_roles"
+            ],
             "bundle_archive_cooldown_count": len(parent_pool_summary["bundle_archive_cooldown_roles"]),
+            "bundle_archive_coexistence_budget_count": len(
+                parent_pool_summary["bundle_archive_coexistence_budget_roles"]
+            ),
+            "bundle_archive_cooldown_true_overload_count": len(
+                parent_pool_summary["bundle_archive_cooldown_true_overload_roles"]
+            ),
+            "bundle_archive_cooldown_avoidable_duplicate_count": len(
+                parent_pool_summary["bundle_archive_cooldown_avoidable_duplicate_roles"]
+            ),
             "bundle_archive_cooldown_streak_by_role": bundle_archive_cooldown_streak_by_role,
             "bundle_archive_cooldown_recoveries": bundle_archive_cooldown_recoveries,
             "bundle_archive_cooldown_recovery_roles": [
@@ -2013,6 +2116,7 @@ class GenerationRunner:
                 f"- bundle_archive_reentry_backoff_roles: {', '.join(summary['selection_summary'].get('bundle_archive_reentry_backoff_roles', [])) or 'none'}",
                 f"- bundle_archive_reentry_block_roles: {', '.join(summary['selection_summary'].get('bundle_archive_reentry_block_roles', [])) or 'none'}",
                 f"- bundle_archive_escalated_backoff_roles: {', '.join(summary['selection_summary'].get('bundle_archive_escalated_backoff_roles', [])) or 'none'}",
+                f"- bundle_archive_coexistence_budget_roles: {', '.join(summary['selection_summary'].get('bundle_archive_coexistence_budget_roles', [])) or 'none'}",
                 f"- bundle_archive_underperform_roles: {', '.join(summary['selection_summary'].get('bundle_archive_underperform_roles', [])) or 'none'}",
                 f"- bundle_archive_eviction_roles: {', '.join(summary['selection_summary'].get('bundle_archive_eviction_roles', [])) or 'none'}",
                 f"- bundle_archive_repeat_eviction_roles: {', '.join(summary['selection_summary'].get('bundle_archive_repeat_eviction_roles', [])) or 'none'}",
@@ -2020,6 +2124,8 @@ class GenerationRunner:
                 f"- bundle_archive_cooldown_roles: {', '.join(summary['selection_summary'].get('bundle_archive_cooldown_roles', [])) or 'none'}",
                 f"- bundle_archive_cooldown_fresh_admission_roles: {', '.join(summary['selection_summary'].get('bundle_archive_cooldown_fresh_admission_roles', [])) or 'none'}",
                 f"- bundle_archive_cooldown_long_lived_debt_roles: {', '.join(summary['selection_summary'].get('bundle_archive_cooldown_long_lived_debt_roles', [])) or 'none'}",
+                f"- bundle_archive_cooldown_true_overload_roles: {', '.join(summary['selection_summary'].get('bundle_archive_cooldown_true_overload_roles', [])) or 'none'}",
+                f"- bundle_archive_cooldown_avoidable_duplicate_roles: {', '.join(summary['selection_summary'].get('bundle_archive_cooldown_avoidable_duplicate_roles', [])) or 'none'}",
                 f"- bundle_archive_cooldown_recovery_roles: {', '.join(summary['selection_summary'].get('bundle_archive_cooldown_recovery_roles', [])) or 'none'}",
                 f"- bundle_decay_prune_roles: {', '.join(summary['selection_summary'].get('bundle_decay_prune_roles', [])) or 'none'}",
                 f"- bundle_archive_lineages: {', '.join(summary['selection_summary'].get('bundle_archive_lineages', [])) or 'none'}",
@@ -2041,6 +2147,9 @@ class GenerationRunner:
                 f"- archive_reentry_max_gap_generations: {summary['selection_summary'].get('archive_reentry_max_gap_generations', 0)}",
                 f"- archive_retired_count: {summary['selection_summary'].get('archive_retired_count', 0)}",
                 f"- archive_failed_admission_count: {summary['selection_summary'].get('archive_failed_admission_count', 0)}",
+                f"- bundle_archive_coexistence_budget_count: {summary['selection_summary'].get('bundle_archive_coexistence_budget_count', 0)}",
+                f"- bundle_archive_cooldown_true_overload_count: {summary['selection_summary'].get('bundle_archive_cooldown_true_overload_count', 0)}",
+                f"- bundle_archive_cooldown_avoidable_duplicate_count: {summary['selection_summary'].get('bundle_archive_cooldown_avoidable_duplicate_count', 0)}",
                 f"- bundle_archive_cooldown_recovery_count: {summary['selection_summary'].get('bundle_archive_cooldown_recovery_count', 0)}",
                 f"- bundle_archive_cooldown_recovery_max_generations: {summary['selection_summary'].get('bundle_archive_cooldown_recovery_max_generations', 0)}",
                 f"- pruned_bundle_count: {summary['selection_summary'].get('pruned_bundle_count', 0)}",
@@ -2097,6 +2206,8 @@ class GenerationRunner:
             lines.append(f"- archive_reentry_block_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_escalated_backoff_roles", []):
             lines.append(f"- archive_escalated_backoff_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_coexistence_budget_roles", []):
+            lines.append(f"- archive_coexistence_budget_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_underperform_roles", []):
             lines.append(f"- archive_underperform_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_eviction_roles", []):
@@ -2111,6 +2222,10 @@ class GenerationRunner:
             lines.append(f"- archive_cooldown_fresh_admission_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_cooldown_long_lived_debt_roles", []):
             lines.append(f"- archive_cooldown_long_lived_debt_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_cooldown_true_overload_roles", []):
+            lines.append(f"- archive_cooldown_true_overload_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_cooldown_avoidable_duplicate_roles", []):
+            lines.append(f"- archive_cooldown_avoidable_duplicate_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_cooldown_recovery_roles", []):
             lines.append(f"- archive_cooldown_recovery_role:{role}")
         for role in summary["selection_summary"].get("bundle_decay_prune_roles", []):

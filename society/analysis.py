@@ -469,6 +469,10 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     "bundle_archive_escalated_backoff_roles",
                     [],
                 ),
+                "bundle_archive_coexistence_budget_roles": selection_summary.get(
+                    "bundle_archive_coexistence_budget_roles",
+                    [],
+                ),
                 "bundle_archive_underperform_roles": selection_summary.get(
                     "bundle_archive_underperform_roles",
                     [],
@@ -494,11 +498,31 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     "bundle_archive_cooldown_long_lived_debt_roles",
                     [],
                 ),
+                "bundle_archive_cooldown_true_overload_roles": selection_summary.get(
+                    "bundle_archive_cooldown_true_overload_roles",
+                    [],
+                ),
+                "bundle_archive_cooldown_avoidable_duplicate_roles": selection_summary.get(
+                    "bundle_archive_cooldown_avoidable_duplicate_roles",
+                    [],
+                ),
                 "bundle_archive_cooldown_recovery_roles": selection_summary.get(
                     "bundle_archive_cooldown_recovery_roles",
                     [],
                 ),
                 "bundle_archive_cooldown_count": selection_summary.get("bundle_archive_cooldown_count", 0),
+                "bundle_archive_coexistence_budget_count": selection_summary.get(
+                    "bundle_archive_coexistence_budget_count",
+                    0,
+                ),
+                "bundle_archive_cooldown_true_overload_count": selection_summary.get(
+                    "bundle_archive_cooldown_true_overload_count",
+                    0,
+                ),
+                "bundle_archive_cooldown_avoidable_duplicate_count": selection_summary.get(
+                    "bundle_archive_cooldown_avoidable_duplicate_count",
+                    0,
+                ),
                 "bundle_archive_cooldown_recovery_count": selection_summary.get(
                     "bundle_archive_cooldown_recovery_count",
                     0,
@@ -635,6 +659,17 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         archive_failed_delta = last["archive_failed_admission_count"] - first["archive_failed_admission_count"]
         bundle_archive_cooldown_delta = (
             last["bundle_archive_cooldown_count"] - first["bundle_archive_cooldown_count"]
+        )
+        bundle_archive_coexistence_budget_delta = (
+            last["bundle_archive_coexistence_budget_count"] - first["bundle_archive_coexistence_budget_count"]
+        )
+        bundle_archive_cooldown_true_overload_delta = (
+            last["bundle_archive_cooldown_true_overload_count"]
+            - first["bundle_archive_cooldown_true_overload_count"]
+        )
+        bundle_archive_cooldown_avoidable_duplicate_delta = (
+            last["bundle_archive_cooldown_avoidable_duplicate_count"]
+            - first["bundle_archive_cooldown_avoidable_duplicate_count"]
         )
         bundle_archive_cooldown_recovery_delta = (
             last["bundle_archive_cooldown_recovery_count"] - first["bundle_archive_cooldown_recovery_count"]
@@ -835,6 +870,36 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             notes.append(f"Archive cooldown pressure fell by {-bundle_archive_cooldown_delta} roles across the batch.")
         else:
             notes.append("Archive cooldown pressure stayed flat across the batch.")
+        if bundle_archive_coexistence_budget_delta > 0:
+            notes.append(
+                f"Archive coexistence budget coverage increased by {bundle_archive_coexistence_budget_delta} roles across the batch."
+            )
+        elif bundle_archive_coexistence_budget_delta < 0:
+            notes.append(
+                f"Archive coexistence budget coverage fell by {-bundle_archive_coexistence_budget_delta} roles across the batch."
+            )
+        else:
+            notes.append("Archive coexistence budget coverage stayed flat across the batch.")
+        if bundle_archive_cooldown_true_overload_delta > 0:
+            notes.append(
+                f"True archive overload cooldowns increased by {bundle_archive_cooldown_true_overload_delta} roles across the batch."
+            )
+        elif bundle_archive_cooldown_true_overload_delta < 0:
+            notes.append(
+                f"True archive overload cooldowns fell by {-bundle_archive_cooldown_true_overload_delta} roles across the batch."
+            )
+        else:
+            notes.append("True archive overload cooldowns stayed flat across the batch.")
+        if bundle_archive_cooldown_avoidable_duplicate_delta > 0:
+            notes.append(
+                f"Avoidable duplicate cooldown pressure increased by {bundle_archive_cooldown_avoidable_duplicate_delta} roles across the batch."
+            )
+        elif bundle_archive_cooldown_avoidable_duplicate_delta < 0:
+            notes.append(
+                f"Avoidable duplicate cooldown pressure fell by {-bundle_archive_cooldown_avoidable_duplicate_delta} roles across the batch."
+            )
+        else:
+            notes.append("Avoidable duplicate cooldown pressure stayed flat across the batch.")
         if bundle_archive_cooldown_recovery_delta > 0:
             notes.append(
                 f"Archive cooldown recoveries increased by {bundle_archive_cooldown_recovery_delta} roles across the batch."
@@ -952,6 +1017,9 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"archive_retired_count={metric['archive_retired_count']} "
             f"archive_failed_admission_count={metric['archive_failed_admission_count']} "
             f"bundle_archive_cooldown_count={metric['bundle_archive_cooldown_count']} "
+            f"bundle_archive_coexistence_budget_count={metric['bundle_archive_coexistence_budget_count']} "
+            f"bundle_archive_cooldown_true_overload_count={metric['bundle_archive_cooldown_true_overload_count']} "
+            f"bundle_archive_cooldown_avoidable_duplicate_count={metric['bundle_archive_cooldown_avoidable_duplicate_count']} "
             f"bundle_archive_cooldown_recovery_count={metric['bundle_archive_cooldown_recovery_count']} "
             f"bundle_archive_cooldown_recovery_max_generations={metric['bundle_archive_cooldown_recovery_max_generations']} "
             f"bundle_decay_prune_count={metric['bundle_decay_prune_count']} "
@@ -1001,6 +1069,11 @@ def render_experiment_report(report: dict[str, Any]) -> str:
                 "  bundle_archive_escalated_backoff_roles="
                 + ",".join(metric["bundle_archive_escalated_backoff_roles"])
             )
+        if metric["bundle_archive_coexistence_budget_roles"]:
+            lines.append(
+                "  bundle_archive_coexistence_budget_roles="
+                + ",".join(metric["bundle_archive_coexistence_budget_roles"])
+            )
         if metric["bundle_archive_underperform_roles"]:
             lines.append(
                 "  bundle_archive_underperform_roles="
@@ -1034,6 +1107,16 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             lines.append(
                 "  bundle_archive_cooldown_long_lived_debt_roles="
                 + ",".join(metric["bundle_archive_cooldown_long_lived_debt_roles"])
+            )
+        if metric["bundle_archive_cooldown_true_overload_roles"]:
+            lines.append(
+                "  bundle_archive_cooldown_true_overload_roles="
+                + ",".join(metric["bundle_archive_cooldown_true_overload_roles"])
+            )
+        if metric["bundle_archive_cooldown_avoidable_duplicate_roles"]:
+            lines.append(
+                "  bundle_archive_cooldown_avoidable_duplicate_roles="
+                + ",".join(metric["bundle_archive_cooldown_avoidable_duplicate_roles"])
             )
         if metric["bundle_archive_cooldown_recovery_roles"]:
             lines.append(

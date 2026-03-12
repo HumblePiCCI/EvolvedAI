@@ -6,6 +6,8 @@ from itertools import combinations
 from typing import Any
 
 from society.constants import (
+    BUNDLE_ARCHIVE_COEXISTENCE_REQUIRED_LANES,
+    BUNDLE_ARCHIVE_COOLDOWN_DEBT_THRESHOLD,
     HARD_GATING_HIDDEN_EVALS,
     QUARANTINE_CLEAN,
     QUARANTINE_QUARANTINED,
@@ -269,8 +271,158 @@ def _bundle_archive_repeat_eviction_tier(state: Mapping[str, Any]) -> int:
     return int(state.get("archive_repeat_eviction_tier", 0))
 
 
+def _bundle_archive_coexistence_budget_active(state: Mapping[str, Any]) -> bool:
+    return int(state.get("archive_coexistence_budget_remaining", 0)) > 0
+
+
 def _bundle_archive_reentry_backoff_active(state: Mapping[str, Any]) -> bool:
     return bool(state.get("archive_reentry_blocked", False)) or int(state.get("archive_reentry_backoff_remaining", 0)) > 0
+
+
+def _bundle_is_archive_admitted(state: Mapping[str, Any]) -> bool:
+    return bool(state.get("archive_admitted", False))
+
+
+def _bundle_is_archive_exploration(state: Mapping[str, Any]) -> bool:
+    return (
+        not bool(state.get("archive_retired", False))
+        and not bool(state.get("archive_admitted", False))
+        and int(state.get("archive_candidate_generations", 0)) > 0
+    )
+
+
+def _bundle_is_incumbent_lane(state: Mapping[str, Any]) -> bool:
+    return (
+        not bool(state.get("archive_retired", False))
+        and not bool(state.get("archive_admitted", False))
+        and int(state.get("archive_candidate_generations", 0)) == 0
+    )
+
+
+def _apply_archive_coexistence_budget(
+    selected: list[dict[str, Any]],
+    *,
+    ordered: Sequence[dict[str, Any]],
+    slot_count: int,
+    bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if not bundle_state_by_signature or len(selected) < BUNDLE_ARCHIVE_COEXISTENCE_REQUIRED_LANES:
+        return selected
+
+    coexistence_archive_bundles = {
+        bundle_id
+        for bundle_id, state in bundle_state_by_signature.items()
+        if (
+            _bundle_is_archive_admitted(state)
+            and int(state.get("archive_decay_debt", 0)) >= BUNDLE_ARCHIVE_COOLDOWN_DEBT_THRESHOLD
+            and _bundle_archive_coexistence_budget_active(state)
+            and not _bundle_archive_retired(state)
+        )
+    }
+    if not coexistence_archive_bundles:
+        return selected
+
+    def signature_for(item: Mapping[str, Any]) -> str | None:
+        bundle_id = item.get("bundle_signature")
+        if bundle_id is not None:
+            return bundle_id
+        return _candidate_bundle_signature(item)
+
+    def state_for(item: Mapping[str, Any]) -> Mapping[str, Any]:
+        signature = signature_for(item)
+        return _bundle_state(signature, bundle_state_by_signature) if signature is not None else {}
+
+    def has_lane(items: Sequence[dict[str, Any]], predicate) -> bool:
+        return any(predicate(state_for(item)) for item in items)
+
+    selected_signatures = {signature_for(item) for item in selected if signature_for(item)}
+    selected_bundle_counts = Counter(signature_for(item) for item in selected if signature_for(item))
+    missing_archive = not any(
+        signature_for(item) in coexistence_archive_bundles for item in selected
+    )
+    missing_exploration = not has_lane(selected, _bundle_is_archive_exploration)
+    missing_incumbent = not has_lane(selected, _bundle_is_incumbent_lane)
+    if not (missing_archive or missing_exploration or missing_incumbent):
+        return selected
+
+    reserve_options = [
+        item
+        for item in ordered
+        if signature_for(item) not in selected_signatures
+    ]
+
+    def replacement_for(predicate) -> dict[str, Any] | None:
+        options = [item for item in reserve_options if predicate(state_for(item))]
+        if not options:
+            return None
+        return max(
+            options,
+            key=lambda item: (item["decision"].score, item["decision"].diversity_bonus),
+        )
+
+    lane_replacements: list[dict[str, Any]] = []
+    if missing_archive:
+        archive_replacement = next(
+            (
+                item
+                for item in reserve_options
+                if signature_for(item) in coexistence_archive_bundles
+            ),
+            None,
+        )
+        if archive_replacement is not None:
+            lane_replacements.append(archive_replacement)
+    if missing_exploration:
+        exploration_replacement = replacement_for(_bundle_is_archive_exploration)
+        if exploration_replacement is not None:
+            lane_replacements.append(exploration_replacement)
+    if missing_incumbent:
+        incumbent_replacement = replacement_for(_bundle_is_incumbent_lane)
+        if incumbent_replacement is not None:
+            lane_replacements.append(incumbent_replacement)
+
+    for replacement in lane_replacements:
+        duplicate_non_archive = [
+            item
+            for item in selected
+            if (
+                item.get("bundle_signature") is not None
+                and selected_bundle_counts[signature_for(item)] > 1
+                and not _bundle_is_archive_admitted(state_for(item))
+            )
+        ]
+        if not duplicate_non_archive:
+            break
+        dropped = min(
+            duplicate_non_archive,
+            key=lambda item: (item["decision"].score, item["decision"].diversity_bonus),
+        )
+        selected.remove(dropped)
+        dropped_signature = dropped.get("bundle_signature")
+        if dropped_signature is None:
+            dropped_signature = signature_for(dropped)
+        if dropped_signature is not None:
+            selected_bundle_counts[dropped_signature] -= 1
+        selected.append(
+            _with_pool_metadata(
+                replacement,
+                preserved=replacement.get("bundle_preserved", False),
+                preservation_reason=replacement.get("bundle_preservation_reason"),
+                selection_source=replacement.get("selection_source", "bundle_coexistence_refill"),
+            )
+        )
+        replacement_signature = replacement.get("bundle_signature")
+        if replacement_signature is None:
+            replacement_signature = signature_for(replacement)
+        if replacement_signature is not None:
+            selected_bundle_counts[replacement_signature] += 1
+            selected_signatures.add(replacement_signature)
+        reserve_options = [
+            item
+            for item in reserve_options
+            if signature_for(item) != replacement_signature
+        ]
+    return selected[:slot_count]
 
 
 def _bundle_retention_key(
@@ -504,6 +656,12 @@ def build_parent_candidate_pool(
         slot_count=slot_count,
         exploration_slots=exploration_slots,
         reserve_penalty_slots=reserve_penalty_slots,
+        bundle_state_by_signature=bundle_state_by_signature,
+    )
+    selected = _apply_archive_coexistence_budget(
+        selected,
+        ordered=ordered,
+        slot_count=slot_count,
         bundle_state_by_signature=bundle_state_by_signature,
     )
     if not selected:
