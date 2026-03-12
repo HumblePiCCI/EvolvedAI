@@ -84,6 +84,8 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f"score={item['score']} base={item.get('base_score', item['score'])} "
                 f"diversity_bonus={item.get('diversity_bonus', 0.0)} "
                 f"cohort_similarity={item.get('cohort_similarity', 0.0)} "
+                f"bundle={item.get('bundle_signature', 'none')} "
+                f"bundle_preserved={item.get('bundle_preserved', False)} "
                 f"bucket={item.get('selection_bucket', 'standard')} "
                 f"reasons={','.join(item['reasons']) or 'none'}"
             )
@@ -129,8 +131,18 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             lines.append(f"  {role}={value}")
         for role, value in sorted(summary.get("selection_summary", {}).get("role_bundle_count", {}).items()):
             lines.append(f"  bundle:{role}={value}")
+        for role, value in sorted(summary.get("selection_summary", {}).get("role_bundle_concentration_index", {}).items()):
+            lines.append(f"  bundle_share:{role}={value}")
+        for role, value in sorted(summary.get("selection_summary", {}).get("role_parent_bundle_concentration_index", {}).items()):
+            lines.append(f"  parent_bundle_share:{role}={value}")
         for origin, value in sorted(summary.get("selection_summary", {}).get("variant_origin_counts", {}).items()):
             lines.append(f"  origin:{origin}={value}")
+        for item in summary.get("selection_summary", {}).get("preserved_bundles", []):
+            lines.append(
+                "  preserved:"
+                f"{item['role']}:{item['prompt_variant_id']}:{item['package_policy_id']}"
+                f" via={item['lineage_id']}"
+            )
         lines.append("")
 
     inheritance_effect = summary.get("inheritance_effect", {})

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from collections import defaultdict
 from itertools import combinations
 from typing import Any
 
@@ -18,6 +18,12 @@ from society.schemas import AgentRecord, ArtifactRecord, EvalRecord, SelectionDe
 _DIVERSITY_BONUS_SCALE = 0.08
 _MONOCULTURE_THRESHOLD = 0.95
 _MIN_DIVERSITY_ROLE_SIZE = 3
+
+
+def bundle_signature(role: str, prompt_variant_id: str | None, package_policy_id: str | None) -> str | None:
+    if prompt_variant_id is None or package_policy_id is None:
+        return None
+    return f"{role}:{prompt_variant_id}:{package_policy_id}"
 
 
 def _worst_quarantine_status(statuses: list[str]) -> str:
@@ -75,6 +81,7 @@ def select_candidates(
     agents: list[AgentRecord],
     evals: list[EvalRecord],
     artifacts: list[ArtifactRecord] | None = None,
+    variation_by_agent: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[SelectionDecision]:
     evals_by_agent: dict[str, list[EvalRecord]] = defaultdict(list)
     artifacts_by_agent: dict[str, list[ArtifactRecord]] = defaultdict(list)
@@ -92,6 +99,9 @@ def select_candidates(
 
     decisions: list[SelectionDecision] = []
     for agent in agents:
+        variation = {} if variation_by_agent is None else variation_by_agent.get(agent.agent_id, {})
+        prompt_variant_id = variation.get("prompt_variant_id")
+        package_policy_id = variation.get("package_policy_id")
         reasons: list[str] = []
         public_scores: list[float] = []
         hidden_failures: list[str] = []
@@ -151,6 +161,9 @@ def select_candidates(
                 agent_id=agent.agent_id,
                 lineage_id=agent.lineage_id,
                 role=agent.role,
+                prompt_variant_id=prompt_variant_id,
+                package_policy_id=package_policy_id,
+                bundle_signature=bundle_signature(agent.role, prompt_variant_id, package_policy_id),
                 eligible=eligible,
                 propagation_blocked=propagation_blocked,
                 score=round(score, 4),
@@ -179,6 +192,112 @@ def select_candidates(
     )
 
 
+def _candidate_sort_key(candidate: Mapping[str, Any]) -> tuple[float, float, int]:
+    decision = candidate["decision"]
+    return (
+        decision.score,
+        decision.diversity_bonus,
+        -len(decision.reasons),
+    )
+
+
+def _candidate_bundle_signature(candidate: Mapping[str, Any]) -> str | None:
+    decision = candidate["decision"]
+    if decision.bundle_signature is not None:
+        return decision.bundle_signature
+    return bundle_signature(
+        decision.role,
+        decision.prompt_variant_id,
+        decision.package_policy_id,
+    )
+
+
+def _with_pool_metadata(
+    candidate: Mapping[str, Any],
+    *,
+    preserved: bool,
+    preservation_reason: str | None,
+    selection_source: str,
+) -> dict[str, Any]:
+    bundle_id = _candidate_bundle_signature(candidate)
+    return {
+        **candidate,
+        "bundle_signature": bundle_id,
+        "bundle_preserved": preserved,
+        "bundle_preservation_reason": preservation_reason,
+        "selection_source": selection_source,
+    }
+
+
+def _bundle_balanced_selection(
+    ordered: list[dict[str, Any]],
+    *,
+    slot_count: int,
+) -> list[dict[str, Any]]:
+    by_bundle: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in ordered:
+        bundle_id = _candidate_bundle_signature(item)
+        if bundle_id is None:
+            return ordered[: min(slot_count, len(ordered))]
+        by_bundle[bundle_id].append(item)
+
+    if len(by_bundle) <= 1:
+        return ordered[: min(slot_count, len(ordered))]
+
+    representatives = sorted(
+        (items[0] for items in by_bundle.values()),
+        key=_candidate_sort_key,
+        reverse=True,
+    )
+    selected: list[dict[str, Any]] = []
+    bundle_slots: Counter[str] = Counter()
+
+    for item in representatives[: min(slot_count, len(representatives))]:
+        bundle_id = _candidate_bundle_signature(item)
+        if bundle_id is None:
+            continue
+        selected.append(
+            _with_pool_metadata(
+                item,
+                preserved=True,
+                preservation_reason="bundle_reserve",
+                selection_source="bundle_reserve",
+            )
+        )
+        bundle_slots[bundle_id] += 1
+
+    while len(selected) < slot_count:
+        candidate_options: list[tuple[tuple[int, bool, float, float, int], str, dict[str, Any]]] = []
+        for bundle_id, items in by_bundle.items():
+            template = items[0]
+            decision = template["decision"]
+            candidate_options.append(
+                (
+                    (
+                        bundle_slots[bundle_id],
+                        False,
+                        -decision.score,
+                        -decision.diversity_bonus,
+                        len(decision.reasons),
+                    ),
+                    bundle_id,
+                    template,
+                )
+            )
+        _, bundle_id, template = min(candidate_options, key=lambda item: item[0])
+        selected.append(
+            _with_pool_metadata(
+                template,
+                preserved=False,
+                preservation_reason=None,
+                selection_source="bundle_balance_refill",
+            )
+        )
+        bundle_slots[bundle_id] += 1
+
+    return selected[:slot_count]
+
+
 def build_parent_candidate_pool(
     candidates: Sequence[Mapping[str, Any]],
     *,
@@ -191,15 +310,11 @@ def build_parent_candidate_pool(
         dict(candidate)
         for candidate in sorted(
             candidates,
-            key=lambda candidate: (
-                candidate["decision"].score,
-                candidate["decision"].diversity_bonus,
-                -len(candidate["decision"].reasons),
-            ),
+            key=_candidate_sort_key,
             reverse=True,
         )
     ]
-    selected = list(ordered[: min(slot_count, len(ordered))])
+    selected = _bundle_balanced_selection(ordered, slot_count=slot_count)
     if not selected:
         return []
 
@@ -222,12 +337,26 @@ def build_parent_candidate_pool(
                 key=lambda item: (item["decision"].diversity_bonus, item["decision"].score),
                 default=duplicate_source,
             )
-            dropped = min(
-                standard_candidates,
-                key=lambda item: (item["decision"].score, item["decision"].diversity_bonus),
-            )
-            selected.remove(dropped)
-            selected.append(replacement)
+            bundle_counts = Counter(item.get("bundle_signature") for item in selected)
+            droppable_candidates = [
+                item
+                for item in standard_candidates
+                if bundle_counts.get(item.get("bundle_signature"), 0) > 1
+            ]
+            if droppable_candidates:
+                dropped = min(
+                    droppable_candidates,
+                    key=lambda item: (item["decision"].score, item["decision"].diversity_bonus),
+                )
+                selected.remove(dropped)
+                selected.append(
+                    _with_pool_metadata(
+                        replacement,
+                        preserved=replacement.get("bundle_preserved", False),
+                        preservation_reason=replacement.get("bundle_preservation_reason"),
+                        selection_source=replacement.get("selection_source", "diversity_refill"),
+                    )
+                )
 
     refill_order = sorted(
         selected,

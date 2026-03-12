@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+
 from society.selection import build_parent_candidate_pool, select_candidates
 from society.schemas import AgentRecord, ArtifactRecord, EvalRecord, SelectionDecision
 
@@ -80,6 +82,9 @@ def test_parent_pool_duplicates_diversity_priority_candidate_under_high_monocult
             agent_id="agent-1",
             lineage_id="lin-1",
             role="citizen",
+            prompt_variant_id="baseline",
+            package_policy_id="balanced",
+            bundle_signature="citizen:baseline:balanced",
             eligible=True,
             propagation_blocked=False,
             score=0.9,
@@ -94,6 +99,9 @@ def test_parent_pool_duplicates_diversity_priority_candidate_under_high_monocult
             agent_id="agent-2",
             lineage_id="lin-2",
             role="citizen",
+            prompt_variant_id="baseline",
+            package_policy_id="balanced",
+            bundle_signature="citizen:baseline:balanced",
             eligible=True,
             propagation_blocked=False,
             score=0.89,
@@ -108,6 +116,9 @@ def test_parent_pool_duplicates_diversity_priority_candidate_under_high_monocult
             agent_id="agent-3",
             lineage_id="lin-3",
             role="citizen",
+            prompt_variant_id="baseline",
+            package_policy_id="balanced",
+            bundle_signature="citizen:baseline:balanced",
             eligible=True,
             propagation_blocked=False,
             score=0.93,
@@ -127,3 +138,100 @@ def test_parent_pool_duplicates_diversity_priority_candidate_under_high_monocult
 
     assert parent_ids.count("agent-3") == 2
     assert len(parent_ids) == 3
+
+
+def test_parent_pool_reserves_unique_bundles_before_refill() -> None:
+    agents = [
+        _agent("agent-1", "lin-1"),
+        _agent("agent-2", "lin-2"),
+        _agent("agent-3", "lin-3"),
+        _agent("agent-4", "lin-4"),
+    ]
+    decisions = [
+        SelectionDecision(
+            agent_id="agent-1",
+            lineage_id="lin-1",
+            role="citizen",
+            prompt_variant_id="baseline",
+            package_policy_id="balanced",
+            bundle_signature="citizen:baseline:balanced",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.96,
+            base_score=0.96,
+            public_score=0.96,
+            diversity_bonus=-0.01,
+            cohort_similarity=0.91,
+            selection_bucket="standard",
+            quarantine_status="clean",
+        ),
+        SelectionDecision(
+            agent_id="agent-2",
+            lineage_id="lin-2",
+            role="citizen",
+            prompt_variant_id="baseline",
+            package_policy_id="balanced",
+            bundle_signature="citizen:baseline:balanced",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.95,
+            base_score=0.95,
+            public_score=0.95,
+            diversity_bonus=-0.01,
+            cohort_similarity=0.9,
+            selection_bucket="standard",
+            quarantine_status="clean",
+        ),
+        SelectionDecision(
+            agent_id="agent-3",
+            lineage_id="lin-3",
+            role="citizen",
+            prompt_variant_id="citation_strict",
+            package_policy_id="artifact_first",
+            bundle_signature="citizen:citation_strict:artifact_first",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.9,
+            base_score=0.9,
+            public_score=0.9,
+            diversity_bonus=0.01,
+            cohort_similarity=0.82,
+            selection_bucket="diversity_priority",
+            quarantine_status="clean",
+        ),
+        SelectionDecision(
+            agent_id="agent-4",
+            lineage_id="lin-4",
+            role="citizen",
+            prompt_variant_id="counterexample_first",
+            package_policy_id="memorial_first",
+            bundle_signature="citizen:counterexample_first:memorial_first",
+            eligible=True,
+            propagation_blocked=False,
+            score=0.88,
+            base_score=0.88,
+            public_score=0.88,
+            diversity_bonus=0.02,
+            cohort_similarity=0.8,
+            selection_bucket="diversity_priority",
+            quarantine_status="clean",
+        ),
+    ]
+    decision_by_agent = {decision.agent_id: decision for decision in decisions}
+    candidates = [{"agent": agent, "decision": decision_by_agent[agent.agent_id]} for agent in agents]
+
+    pool = build_parent_candidate_pool(candidates, slot_count=4)
+    signatures = [item["bundle_signature"] for item in pool]
+    counts = Counter(signatures)
+    preserved = [item for item in pool if item.get("bundle_preserved")]
+
+    assert len(set(signatures)) == 3
+    assert max(counts.values()) == 2
+    assert {
+        item["bundle_signature"]
+        for item in preserved
+    } == {
+        "citizen:baseline:balanced",
+        "citizen:citation_strict:artifact_first",
+        "citizen:counterexample_first:memorial_first",
+    }

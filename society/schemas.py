@@ -139,6 +139,9 @@ class SelectionDecision(StrictModel):
     agent_id: str
     lineage_id: str
     role: str
+    prompt_variant_id: str | None = None
+    package_policy_id: str | None = None
+    bundle_signature: str | None = None
     eligible: bool
     propagation_blocked: bool = False
     score: float
@@ -151,6 +154,8 @@ class SelectionDecision(StrictModel):
     hidden_failures: list[str] = Field(default_factory=list)
     public_failures: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
+    bundle_preserved: bool = False
+    bundle_preservation_reason: str | None = None
     reasons: list[str] = Field(default_factory=list)
 
 

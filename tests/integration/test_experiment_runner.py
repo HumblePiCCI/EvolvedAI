@@ -35,6 +35,9 @@ def test_run_experiment_exports_batch_and_lineage_history(config_path: Path) -> 
     assert "prompt_bundle_count" in report["generation_metrics"][0]
     assert "largest_variant_share" in report["generation_metrics"][0]
     assert "largest_bundle_share" in report["generation_metrics"][0]
+    assert "bundle_concentration_index" in report["generation_metrics"][0]
+    assert "bundle_survival_rate" in report["generation_metrics"][0]
+    assert "preserved_bundle_count" in report["generation_metrics"][0]
     assert "drift_pressure_lineages" in report["generation_metrics"][0]
 
     storage = StorageManager(
@@ -58,5 +61,7 @@ def test_run_experiment_exports_batch_and_lineage_history(config_path: Path) -> 
         assert "warning_outcome" in lineage_report["selected_lineage"]
         assert "selection_bucket" in lineage_report["selected_lineage"]
         assert "prompt_variant_id" in lineage_report["selected_lineage"]
+        assert "bundle_signature" in lineage_report["selected_lineage"]
+        assert "inheritance_source_bundle_signature" in lineage_report["selected_lineage"]
     finally:
         storage.close()
