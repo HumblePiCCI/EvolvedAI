@@ -108,3 +108,23 @@ def test_all_citizens_receive_a_turn_after_inheritance(tmp_path: Path) -> None:
             assert storage.read_agent_log(2, citizen.agent_id), citizen.agent_id
     finally:
         storage.close()
+
+
+def test_high_monoculture_citizen_role_reuses_diversity_priority_parent(tmp_path: Path) -> None:
+    config = _full_population_config(tmp_path)
+    storage = StorageManager(root_dir=config.storage.root_dir, db_path=config.storage.db_path)
+    provider = build_provider(config.provider.name, config.provider.model)
+    try:
+        runner = GenerationRunner(config=config, storage=storage, provider=provider, repo_root=REPO_ROOT)
+        summary_one = runner.run(generation_id=1)
+        summary_two = runner.run(generation_id=2)
+
+        assert summary_one["selection_summary"]["role_monoculture_index"]["citizen"] > 0.95
+
+        citizen_updates = [item for item in summary_two["lineage_updates"] if item["role"] == "citizen"]
+        parent_ids = [item["parent_lineage_ids"][0] for item in citizen_updates if item["parent_lineage_ids"]]
+
+        assert len(parent_ids) == 6
+        assert len(set(parent_ids)) == 5
+    finally:
+        storage.close()

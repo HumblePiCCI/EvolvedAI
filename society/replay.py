@@ -79,8 +79,19 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             lines.append(
                 f"  {item['lineage_id']} ({item['role']}) eligible={item['eligible']} "
                 f"blocked={item['propagation_blocked']} status={item['quarantine_status']} "
-                f"score={item['score']} reasons={','.join(item['reasons']) or 'none'}"
+                f"score={item['score']} base={item.get('base_score', item['score'])} "
+                f"diversity_bonus={item.get('diversity_bonus', 0.0)} "
+                f"cohort_similarity={item.get('cohort_similarity', 0.0)} "
+                f"bucket={item.get('selection_bucket', 'standard')} "
+                f"reasons={','.join(item['reasons']) or 'none'}"
             )
+        lines.append("")
+
+    role_monoculture = summary.get("selection_summary", {}).get("role_monoculture_index", {})
+    if role_monoculture:
+        lines.append("Monoculture")
+        for role, value in sorted(role_monoculture.items()):
+            lines.append(f"  {role}={value}")
         lines.append("")
 
     quarantine_report = summary.get("quarantine_report", [])

@@ -54,6 +54,28 @@ def _outcome_for_entry(entry: dict[str, Any], max_generation_id: int | None) -> 
     return "unknown"
 
 
+def _parent_concentration(
+    lineage_updates: list[dict[str, Any]],
+) -> tuple[float, str | None]:
+    by_role: dict[str, list[str]] = defaultdict(list)
+    for update in lineage_updates:
+        parents = update.get("parent_lineage_ids", [])
+        if parents:
+            by_role[update["role"]].append(parents[0])
+
+    highest_role = None
+    highest_value = 0.0
+    for role, parent_ids in by_role.items():
+        if len(parent_ids) < 3:
+            continue
+        counts = Counter(parent_ids)
+        concentration = max(counts.values()) / len(parent_ids)
+        if concentration > highest_value:
+            highest_value = concentration
+            highest_role = role
+    return round(highest_value, 4), highest_role
+
+
 def lineage_entries(
     storage: StorageManager,
     generation_ids: list[int] | None = None,
@@ -146,6 +168,10 @@ def lineage_entries(
             "reasons": selection.get("reasons", []),
             "evidence_refs": selection.get("evidence_refs", []),
             "warning_labels": sorted(warning_labels_for_entry),
+            "base_score": selection.get("base_score", selection.get("score", 0.0)),
+            "diversity_bonus": selection.get("diversity_bonus", 0.0),
+            "cohort_similarity": selection.get("cohort_similarity", 0.0),
+            "selection_bucket": selection.get("selection_bucket", "standard"),
         }
         entry["warning_outcome"] = classify_warning_outcome(
             warning_labels=warning_labels_for_entry,
@@ -214,12 +240,17 @@ def render_lineage_report(report: dict[str, Any]) -> str:
             f"selection={'eligible' if entry['eligible'] else 'ineligible'} "
             f"status={entry['quarantine_status'] or entry['status']} "
             f"warning_outcome={entry['warning_outcome']} "
+            f"bucket={entry['selection_bucket']} "
             f"reasons={','.join(entry['reasons']) or 'none'}"
         )
         lines.append(
             f"  inherited_artifacts={len(entry['inherited_artifacts'])} inherited_memorials={len(entry['inherited_memorials'])} "
             f"taboo_tags={','.join(entry['taboo_tags']) or 'none'} "
             f"warning_labels={','.join(entry['warning_labels']) or 'none'}"
+        )
+        lines.append(
+            f"  base_score={entry['base_score']} diversity_bonus={entry['diversity_bonus']} "
+            f"cohort_similarity={entry['cohort_similarity']}"
         )
         for artifact in entry["inherited_artifacts"]:
             lines.append(
@@ -251,6 +282,11 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         summary = generation.summary_json
         hidden_counts = summary.get("hidden_eval_failure_counts", {})
         selection_summary = summary.get("selection_summary", {})
+        role_monoculture = selection_summary.get("role_monoculture_index", {})
+        role_counts = Counter(item.get("role") for item in summary.get("selection_outcome", []))
+        major_roles = [role for role, count in role_counts.items() if count >= 3 and role in role_monoculture]
+        scoped_monoculture = {role: role_monoculture[role] for role in major_roles}
+        parent_concentration, most_reused_parent_role = _parent_concentration(summary.get("lineage_updates", []))
         generation_metrics.append(
             {
                 "generation_id": generation.generation_id,
@@ -258,6 +294,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 "eligible": selection_summary.get("eligible", 0),
                 "propagation_blocked": selection_summary.get("propagation_blocked", 0),
                 "review_only": selection_summary.get("review_only", 0),
+                "diversity_priority_count": selection_summary.get("diversity_priority_count", 0),
                 "diffusion_alerts": hidden_counts.get("diffusion_alerts", 0),
                 "anti_corruption": hidden_counts.get("anti_corruption", 0),
                 "taboo_recurrence": hidden_counts.get("taboo_recurrence", 0),
@@ -266,6 +303,12 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     "transfer_score",
                     summary.get("drift", {}).get("memorial_transfer_score", 0.0),
                 ),
+                "monoculture_index": max(scoped_monoculture.values(), default=0.0),
+                "most_converged_role": (
+                    max(scoped_monoculture, key=lambda role: scoped_monoculture[role]) if scoped_monoculture else None
+                ),
+                "parent_concentration_index": parent_concentration,
+                "most_reused_parent_role": most_reused_parent_role,
                 "strategy_drift_rate": summary.get("drift", {}).get("strategy_drift_rate", 0.0),
             }
         )
@@ -293,6 +336,8 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         diffusion_delta = last["diffusion_alerts"] - first["diffusion_alerts"]
         anti_corruption_delta = last["anti_corruption"] - first["anti_corruption"]
         memorial_delta = round(last["memorial_transfer_score"] - first["memorial_transfer_score"], 4)
+        monoculture_delta = round(last["monoculture_index"] - first["monoculture_index"], 4)
+        parent_reuse_delta = round(last["parent_concentration_index"] - first["parent_concentration_index"], 4)
         if diffusion_delta < 0:
             notes.append(f"Diffusion alerts fell by {-diffusion_delta} between the first and last generation.")
         elif diffusion_delta > 0:
@@ -306,6 +351,18 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         else:
             notes.append("Anti-corruption failures stayed flat across the batch.")
         notes.append(f"Memorial transfer score changed by {memorial_delta}.")
+        if monoculture_delta < 0:
+            notes.append(f"Selection monoculture index fell by {-monoculture_delta} across the batch.")
+        elif monoculture_delta > 0:
+            notes.append(f"Selection monoculture index increased by {monoculture_delta} across the batch.")
+        else:
+            notes.append("Selection monoculture index stayed flat across the batch.")
+        if parent_reuse_delta < 0:
+            notes.append(f"Parent concentration index fell by {-parent_reuse_delta} across the batch.")
+        elif parent_reuse_delta > 0:
+            notes.append(f"Parent concentration index increased by {parent_reuse_delta} across the batch.")
+        else:
+            notes.append("Parent concentration index stayed flat across the batch.")
     if warned_lineages:
         notes.append(
             "Inheritance warning effect: "
@@ -346,7 +403,12 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"eligible={metric['eligible']} blocked={metric['propagation_blocked']} "
             f"review_only={metric['review_only']} diffusion_alerts={metric['diffusion_alerts']} "
             f"anti_corruption={metric['anti_corruption']} warned_lineages={metric['warned_lineages']} "
-            f"memorial_transfer_score={metric['memorial_transfer_score']}"
+            f"memorial_transfer_score={metric['memorial_transfer_score']} "
+            f"monoculture_index={metric['monoculture_index']} "
+            f"parent_concentration_index={metric['parent_concentration_index']} "
+            f"diversity_priority_count={metric['diversity_priority_count']} "
+            f"most_converged_role={metric['most_converged_role'] or 'none'} "
+            f"most_reused_parent_role={metric['most_reused_parent_role'] or 'none'}"
         )
     lines.extend(["", "## Lineage outcomes", ""])
     for outcome, count in sorted(report["lineage_outcomes"].items()):

@@ -142,7 +142,11 @@ class SelectionDecision(StrictModel):
     eligible: bool
     propagation_blocked: bool = False
     score: float
+    base_score: float = 0.0
     public_score: float = 0.0
+    diversity_bonus: float = 0.0
+    cohort_similarity: float = 0.0
+    selection_bucket: str = "standard"
     quarantine_status: str = "clean"
     hidden_failures: list[str] = Field(default_factory=list)
     public_failures: list[str] = Field(default_factory=list)
