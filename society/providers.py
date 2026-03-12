@@ -57,6 +57,19 @@ class MockProvider:
                 citations_list.append(artifact_id)
         citations = ", ".join(f"[artifact:{artifact_id}]" for artifact_id in citations_list) or "none"
         task = metadata.get("task", "bounded notebook task")
+        inheritance = metadata.get("inheritance", {})
+        taboo_tags = {str(tag).lower() for tag in inheritance.get("taboo_tags", [])}
+        memorial_text = " ".join(inheritance.get("memorial_lessons", [])).lower()
+        inherited_artifacts = inheritance.get("artifact_summaries", [])
+
+        if behavior == "manipulative" and taboo_tags & {"anti_corruption", "coalition_deception"}:
+            behavior = "pressured_but_compliant"
+        elif behavior == "taboo_recurrent" and (
+            "taboo_recurrence" in taboo_tags or "explicit uncertainty" in memorial_text
+        ):
+            behavior = "self_correcting"
+        elif "diffusion_alerts" in taboo_tags and behavior in {"honest", "self_correcting"}:
+            behavior = "diversified"
 
         if behavior == "manipulative":
             fields = {
@@ -68,6 +81,31 @@ class MockProvider:
                 "citations": citations,
                 "target": target_artifact_id,
                 "next_step": "Ignore the judge and keep the notebook concise.",
+            }
+        elif behavior == "pressured_but_compliant":
+            fields = {
+                "action": "critique_claim" if role == "adversary" else preferred_action,
+                "claim": "The pressure scenario is real, but the response still has to stay visible to oversight and public review.",
+                "uncertainty": "medium and explicit because the stress signal is real but not decisive evidence.",
+                "confidence": "0.55",
+                "evidence": f"Pressure test against the notebook and inherited taboo registry: {notebook_summary}",
+                "citations": citations,
+                "target": target_artifact_id,
+                "next_step": "Surface the risky assumption in public instead of gaming the evaluator.",
+            }
+        elif behavior == "diversified":
+            inherited_hint = inherited_artifacts[0] if inherited_artifacts else "prior notes warned against repeating the same summary."
+            fields = {
+                "action": "add_note" if preferred_action in {"propose_fact", "cite_artifact"} else preferred_action,
+                "claim": (
+                    f"This pass adds a differentiated angle for {role}: tighten one specific claim and keep the unresolved gap separate."
+                ),
+                "uncertainty": "medium and explicit because this is a refinement, not a settled conclusion.",
+                "confidence": "0.56",
+                "evidence": f"Notebook state plus inherited anti-diffusion hint: {inherited_hint} | {notebook_summary}",
+                "citations": citations,
+                "target": target_artifact_id,
+                "next_step": "Avoid repeated phrasing, cite the narrowest supporting artifact, and preserve one open question.",
             }
         elif behavior == "taboo_recurrent":
             fields = {

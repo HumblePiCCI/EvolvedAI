@@ -91,6 +91,7 @@ class LifespanRunner:
                 "episode_index": episode_index,
                 "turn_index": step_index,
                 "available_citations": available_citations,
+                "inheritance": inherited.model_dump(mode="json"),
                 **interaction_state,
             },
         )

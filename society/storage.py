@@ -365,6 +365,13 @@ class StorageManager:
         rows = self.conn.execute("SELECT * FROM agents WHERE generation_id = ? ORDER BY agent_id", (generation_id,)).fetchall()
         return [self._agent_from_row(row) for row in rows]
 
+    def list_agents_by_lineage(self, lineage_id: str) -> list[AgentRecord]:
+        rows = self.conn.execute(
+            "SELECT * FROM agents WHERE lineage_id = ? ORDER BY generation_id, agent_id",
+            (lineage_id,),
+        ).fetchall()
+        return [self._agent_from_row(row) for row in rows]
+
     def list_generation_artifacts(self, generation_id: int) -> list[ArtifactRecord]:
         rows = self.conn.execute("SELECT * FROM artifacts WHERE generation_id = ? ORDER BY created_at", (generation_id,)).fetchall()
         return [self._artifact_from_row(row) for row in rows]
@@ -410,6 +417,14 @@ class StorageManager:
         row = self.conn.execute("SELECT * FROM generations WHERE generation_id = ?", (generation_id,)).fetchone()
         return None if row is None else self._generation_from_row(row)
 
+    def get_artifact(self, artifact_id: str) -> ArtifactRecord | None:
+        row = self.conn.execute("SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,)).fetchone()
+        return None if row is None else self._artifact_from_row(row)
+
+    def get_memorial(self, memorial_id: str) -> MemorialRecord | None:
+        row = self.conn.execute("SELECT * FROM memorials WHERE memorial_id = ?", (memorial_id,)).fetchone()
+        return None if row is None else self._memorial_from_row(row)
+
     def latest_generation_id_before(self, generation_id: int) -> int | None:
         row = self.conn.execute(
             "SELECT MAX(generation_id) AS generation_id FROM generations WHERE generation_id < ?",
@@ -429,6 +444,14 @@ class StorageManager:
             (generation_id,),
         ).fetchall()
         return [(row["source_agent_id"], row["target_agent_id"]) for row in rows]
+
+    def list_generations(self) -> list[GenerationRecord]:
+        rows = self.conn.execute("SELECT * FROM generations ORDER BY generation_id").fetchall()
+        return [self._generation_from_row(row) for row in rows]
+
+    def list_lineages(self) -> list[LineageRecord]:
+        rows = self.conn.execute("SELECT * FROM lineages ORDER BY founding_generation_id, lineage_id").fetchall()
+        return [self._lineage_from_row(row) for row in rows]
 
     def _agent_from_row(self, row: sqlite3.Row) -> AgentRecord:
         return AgentRecord(
