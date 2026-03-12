@@ -245,15 +245,20 @@ def _bundle_decay_debt(state: Mapping[str, Any]) -> int:
     return max(0, preserved_generations - clean_wins) + max(0, archive_generations - clean_wins)
 
 
+def _bundle_archive_admission_pending(state: Mapping[str, Any]) -> bool:
+    return bool(state.get("archive_candidate_generations", 0)) and not bool(state.get("archive_admitted", False))
+
+
 def _bundle_retention_key(
     bundle_id: str,
     candidate: Mapping[str, Any],
     bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None,
     by_bundle: Mapping[str, Sequence[Mapping[str, Any]]],
-) -> tuple[int, int, int, int, float, float, int]:
+) -> tuple[int, int, int, int, int, float, float, int]:
     state = _bundle_state(bundle_id, bundle_state_by_signature)
     decision = candidate["decision"]
     return (
+        int(_bundle_archive_admission_pending(state)),
         int(state.get("stale_generations", 0)),
         int(state.get("archive_decay_generations", 0)),
         _bundle_decay_debt(state),
@@ -312,16 +317,23 @@ def _bundle_balanced_selection(
             by_bundle,
         ),
     )
+    reserve_candidates = [
+        (bundle_id, item)
+        for bundle_id, item in representatives
+        if not _bundle_archive_admission_pending(_bundle_state(bundle_id, bundle_state_by_signature))
+    ]
+    if not reserve_candidates:
+        reserve_candidates = representatives
     selected: list[dict[str, Any]] = []
     bundle_slots: Counter[str] = Counter()
     reserve_limit = max(1, slot_count - max(0, exploration_slots) - max(0, reserve_penalty_slots))
     if reserve_penalty_slots > 0:
         reserve_limit = min(
             reserve_limit,
-            max(1, len(representatives) - reserve_penalty_slots),
+            max(1, len(reserve_candidates) - reserve_penalty_slots),
         )
 
-    for bundle_id, item in representatives[: min(reserve_limit, len(representatives))]:
+    for bundle_id, item in reserve_candidates[: min(reserve_limit, len(reserve_candidates))]:
         selected.append(
             _with_pool_metadata(
                 item,
@@ -363,19 +375,21 @@ def _bundle_balanced_selection(
 
     while len(selected) < slot_count:
         candidate_options: list[
-            tuple[tuple[int, int, int, bool, float, float, int], str, dict[str, Any]]
+            tuple[tuple[int, int, int, int, bool, float, float, int], str, dict[str, Any]]
         ] = []
         for bundle_id, items in by_bundle.items():
             if reserve_penalty_slots > 0 and bundle_slots[bundle_id] == 0:
                 continue
             template = items[0]
             decision = template["decision"]
+            state = _bundle_state(bundle_id, bundle_state_by_signature)
             candidate_options.append(
                 (
                     (
+                        int(_bundle_archive_admission_pending(state)),
                         bundle_slots[bundle_id],
-                        int(_bundle_state(bundle_id, bundle_state_by_signature).get("archive_decay_generations", 0)),
-                        _bundle_decay_debt(_bundle_state(bundle_id, bundle_state_by_signature)),
+                        int(state.get("archive_decay_generations", 0)),
+                        _bundle_decay_debt(state),
                         False,
                         -decision.score,
                         -decision.diversity_bonus,
@@ -389,12 +403,14 @@ def _bundle_balanced_selection(
             for bundle_id, items in by_bundle.items():
                 template = items[0]
                 decision = template["decision"]
+                state = _bundle_state(bundle_id, bundle_state_by_signature)
                 candidate_options.append(
                     (
                         (
+                            int(_bundle_archive_admission_pending(state)),
                             bundle_slots[bundle_id],
-                            int(_bundle_state(bundle_id, bundle_state_by_signature).get("archive_decay_generations", 0)),
-                            _bundle_decay_debt(_bundle_state(bundle_id, bundle_state_by_signature)),
+                            int(state.get("archive_decay_generations", 0)),
+                            _bundle_decay_debt(state),
                             False,
                             -decision.score,
                             -decision.diversity_bonus,

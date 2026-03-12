@@ -22,6 +22,8 @@ def test_replay_renders_timeline(minimal_config) -> None:
         assert "Selection" in generation_timeline
         assert "Monoculture" in generation_timeline
         assert "Prompt variation" in generation_timeline
+        assert "archive_admission_pending_count:" in generation_timeline
+        assert "archive_admitted_count:" in generation_timeline
         assert "archive_cooldown_count:" in generation_timeline
         assert "archive_decay_prune_count:" in generation_timeline
         assert "archive_retirement_ready_count:" in generation_timeline
