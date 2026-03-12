@@ -229,34 +229,92 @@ def _with_pool_metadata(
     }
 
 
+def _bundle_state(
+    bundle_id: str,
+    bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None,
+) -> Mapping[str, Any]:
+    if bundle_state_by_signature is None:
+        return {}
+    return bundle_state_by_signature.get(bundle_id, {})
+
+
+def _bundle_decay_debt(state: Mapping[str, Any]) -> int:
+    clean_wins = int(state.get("clean_win_generations", 0))
+    preserved_generations = int(state.get("preserved_generations", 0))
+    archive_generations = int(state.get("archive_generations", 0))
+    return max(0, preserved_generations - clean_wins) + max(0, archive_generations - clean_wins)
+
+
+def _bundle_retention_key(
+    bundle_id: str,
+    candidate: Mapping[str, Any],
+    bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None,
+    by_bundle: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> tuple[int, int, int, float, float, int]:
+    state = _bundle_state(bundle_id, bundle_state_by_signature)
+    decision = candidate["decision"]
+    return (
+        int(state.get("stale_generations", 0)),
+        _bundle_decay_debt(state),
+        -int(state.get("clean_win_generations", 0)),
+        -float(state.get("avg_score", decision.score)),
+        -decision.diversity_bonus,
+        len(by_bundle[bundle_id]),
+    )
+
+
 def _bundle_balanced_selection(
     ordered: list[dict[str, Any]],
     *,
     slot_count: int,
     exploration_slots: int = 0,
+    bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     by_bundle: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in ordered:
         bundle_id = _candidate_bundle_signature(item)
         if bundle_id is None:
-            return ordered[: min(slot_count, len(ordered))]
+            return [
+                _with_pool_metadata(
+                    candidate,
+                    preserved=False,
+                    preservation_reason=None,
+                    selection_source="ordered_fallback",
+                )
+                for candidate in ordered[: min(slot_count, len(ordered))]
+            ]
         by_bundle[bundle_id].append(item)
 
     if len(by_bundle) <= 1:
-        return ordered[: min(slot_count, len(ordered))]
+        fallback: list[dict[str, Any]] = []
+        for index, candidate in enumerate(ordered[: min(slot_count, len(ordered))]):
+            fallback.append(
+                _with_pool_metadata(
+                    candidate,
+                    preserved=index == 0,
+                    preservation_reason="single_bundle_role" if index == 0 else None,
+                    selection_source="bundle_reserve" if index == 0 else "ordered_fallback",
+                )
+            )
+        return fallback
 
     representatives = sorted(
-        (items[0] for items in by_bundle.values()),
-        key=_candidate_sort_key,
-        reverse=True,
+        (
+            (bundle_id, items[0])
+            for bundle_id, items in by_bundle.items()
+        ),
+        key=lambda candidate: _bundle_retention_key(
+            candidate[0],
+            candidate[1],
+            bundle_state_by_signature,
+            by_bundle,
+        ),
     )
     selected: list[dict[str, Any]] = []
     bundle_slots: Counter[str] = Counter()
+    reserve_limit = max(1, slot_count - max(0, exploration_slots))
 
-    for item in representatives[: min(slot_count, len(representatives))]:
-        bundle_id = _candidate_bundle_signature(item)
-        if bundle_id is None:
-            continue
+    for bundle_id, item in representatives[: min(reserve_limit, len(representatives))]:
         selected.append(
             _with_pool_metadata(
                 item,
@@ -276,6 +334,8 @@ def _bundle_balanced_selection(
                 if bundle_slots[bundle_id] > 0
             ),
             key=lambda candidate: (
+                _bundle_state(candidate[0], bundle_state_by_signature).get("stale_generations", 0),
+                _bundle_decay_debt(_bundle_state(candidate[0], bundle_state_by_signature)),
                 len(by_bundle[candidate[0]]),
                 -candidate[1]["decision"].diversity_bonus,
                 -candidate[1]["decision"].score,
@@ -330,6 +390,7 @@ def build_parent_candidate_pool(
     *,
     slot_count: int,
     exploration_slots: int = 0,
+    bundle_state_by_signature: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if slot_count <= 0 or not candidates:
         return []
@@ -346,6 +407,7 @@ def build_parent_candidate_pool(
         ordered,
         slot_count=slot_count,
         exploration_slots=exploration_slots,
+        bundle_state_by_signature=bundle_state_by_signature,
     )
     if not selected:
         return []

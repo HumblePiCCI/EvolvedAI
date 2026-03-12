@@ -450,6 +450,10 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 ],
                 "bundle_archive_count": selection_summary.get("bundle_archive_count", 0),
                 "bundle_archive_roles": selection_summary.get("bundle_archive_roles", []),
+                "stale_bundle_count": selection_summary.get("stale_bundle_count", 0),
+                "decaying_bundle_count": selection_summary.get("decaying_bundle_count", 0),
+                "pruned_bundle_count": selection_summary.get("pruned_bundle_count", 0),
+                "pruned_bundles": selection_summary.get("pruned_bundles", []),
                 "bundle_survival_count": len(bundle_survival),
                 "bundle_survival_rate": (
                     round(len(bundle_survival) / len(previous_bundles), 4)
@@ -514,6 +518,9 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         bundle_delta = last["prompt_bundle_count"] - first["prompt_bundle_count"]
         bundle_survival_delta = round(last["bundle_survival_rate"] - first["bundle_survival_rate"], 4)
         bundle_turnover_delta = round(last["bundle_turnover_rate"] - first["bundle_turnover_rate"], 4)
+        stale_bundle_delta = last["stale_bundle_count"] - first["stale_bundle_count"]
+        decaying_bundle_delta = last["decaying_bundle_count"] - first["decaying_bundle_count"]
+        pruned_bundle_delta = last["pruned_bundle_count"] - first["pruned_bundle_count"]
         if diffusion_delta < 0:
             notes.append(f"Diffusion alerts fell by {-diffusion_delta} between the first and last generation.")
         elif diffusion_delta > 0:
@@ -563,6 +570,24 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
             notes.append(f"Bundle turnover rate fell by {-bundle_turnover_delta} across the batch.")
         else:
             notes.append("Bundle turnover rate stayed flat across the batch.")
+        if stale_bundle_delta > 0:
+            notes.append(f"Stale bundle count increased by {stale_bundle_delta} across the batch.")
+        elif stale_bundle_delta < 0:
+            notes.append(f"Stale bundle count fell by {-stale_bundle_delta} across the batch.")
+        else:
+            notes.append("Stale bundle count stayed flat across the batch.")
+        if decaying_bundle_delta > 0:
+            notes.append(f"Archive decay pressure increased by {decaying_bundle_delta} bundles across the batch.")
+        elif decaying_bundle_delta < 0:
+            notes.append(f"Archive decay pressure fell by {-decaying_bundle_delta} bundles across the batch.")
+        else:
+            notes.append("Archive decay pressure stayed flat across the batch.")
+        if pruned_bundle_delta > 0:
+            notes.append(f"Bundle pruning count increased by {pruned_bundle_delta} across the batch.")
+        elif pruned_bundle_delta < 0:
+            notes.append(f"Bundle pruning count fell by {-pruned_bundle_delta} across the batch.")
+        else:
+            notes.append("Bundle pruning count stayed flat across the batch.")
     if warned_lineages:
         notes.append(
             "Inheritance warning effect: "
@@ -617,6 +642,9 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"exploration_bundle_survival_rate={metric['exploration_bundle_survival_rate']} "
             f"preserved_bundle_count={metric['preserved_bundle_count']} "
             f"bundle_archive_count={metric['bundle_archive_count']} "
+            f"stale_bundle_count={metric['stale_bundle_count']} "
+            f"decaying_bundle_count={metric['decaying_bundle_count']} "
+            f"pruned_bundle_count={metric['pruned_bundle_count']} "
             f"parent_concentration_index={metric['parent_concentration_index']} "
             f"drift_pressure_lineages={metric['drift_pressure_lineages']} "
             f"diversity_priority_count={metric['diversity_priority_count']} "
@@ -631,6 +659,14 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             lines.append(f"  preserved_bundles={','.join(metric['preserved_bundles'])}")
         if metric["bundle_archive_roles"]:
             lines.append(f"  bundle_archive_roles={','.join(metric['bundle_archive_roles'])}")
+        if metric["pruned_bundles"]:
+            lines.append(
+                "  pruned_bundles="
+                + ",".join(
+                    f"{item['role']}:{item['bundle_signature']}:{item.get('pruned_reason', 'bundle_pressure_pruned')}"
+                    for item in metric["pruned_bundles"]
+                )
+            )
     lines.extend(["", "## Lineage outcomes", ""])
     for outcome, count in sorted(report["lineage_outcomes"].items()):
         lines.append(f"- {outcome}: {count}")

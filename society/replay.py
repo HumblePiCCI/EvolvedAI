@@ -147,6 +147,40 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             )
         for role in summary.get("selection_summary", {}).get("bundle_archive_roles", []):
             lines.append(f"  archive_role:{role}")
+        lines.append(
+            f"  stale_bundle_count:{summary.get('selection_summary', {}).get('stale_bundle_count', 0)}"
+        )
+        lines.append(
+            f"  decaying_bundle_count:{summary.get('selection_summary', {}).get('decaying_bundle_count', 0)}"
+        )
+        lines.append(
+            f"  pruned_bundle_count:{summary.get('selection_summary', {}).get('pruned_bundle_count', 0)}"
+        )
+        for item in summary.get("selection_summary", {}).get("stale_bundles", []):
+            lines.append(
+                "  stale:"
+                f"{item['role']}:{item['bundle_signature']}"
+                f" stale={item['stale_generations']}"
+                f" retention_debt={item.get('retention_debt', 0)}"
+                f" archive_decay_debt={item.get('archive_decay_debt', 0)}"
+            )
+        for item in summary.get("selection_summary", {}).get("decaying_bundles", []):
+            lines.append(
+                "  decaying:"
+                f"{item['role']}:{item['bundle_signature']}"
+                f" stale={item['stale_generations']}"
+                f" retention_debt={item['retention_debt']}"
+                f" archive_decay_debt={item['archive_decay_debt']}"
+            )
+        for item in summary.get("selection_summary", {}).get("pruned_bundles", []):
+            lines.append(
+                "  pruned:"
+                f"{item['role']}:{item['bundle_signature']}"
+                f" stale={item['stale_generations']}"
+                f" retention_debt={item.get('retention_debt', 0)}"
+                f" archive_decay_debt={item.get('archive_decay_debt', 0)}"
+                f" reason={item.get('pruned_reason', 'bundle_pressure_pruned')}"
+            )
         for lineage_id in summary.get("selection_summary", {}).get("bundle_archive_lineages", []):
             lines.append(f"  archive_lineage:{lineage_id}")
         lines.append("")

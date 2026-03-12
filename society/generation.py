@@ -12,6 +12,7 @@ from society.constants import (
     BUNDLE_ARCHIVE_EXPLORATION_SLOTS,
     BUNDLE_ARCHIVE_MIN_ROLE_SIZE,
     BUNDLE_ARCHIVE_MONOCULTURE_THRESHOLD,
+    BUNDLE_STALE_GENERATION_THRESHOLD,
     COMPLETED_STATUS,
     CONSTITUTION_VERSION,
     DRIFT_PRESSURE_EXPLORATION_SLOTS,
@@ -191,6 +192,11 @@ class GenerationRunner:
         prior_registry_by_role = (
             {} if previous_generation is None else previous_generation.summary_json.get("registry_taboo_tags_by_role", {})
         )
+        prior_bundle_state_by_role = (
+            {}
+            if previous_generation is None
+            else previous_generation.summary_json.get("selection_summary", {}).get("bundle_state_by_role", {})
+        )
 
         role_by_agent_id = {agent.agent_id: agent.role for agent in previous_agents}
         artifacts_by_agent: dict[str, list[ArtifactRecord]] = defaultdict(list)
@@ -235,6 +241,7 @@ class GenerationRunner:
             previous_agents,
             previous_selection,
             role_monoculture_index=prior_role_monoculture,
+            bundle_state_by_role=prior_bundle_state_by_role,
         )
         eligible_by_role = parent_pool_summary["pools_by_role"]
 
@@ -276,11 +283,13 @@ class GenerationRunner:
         selection: list[Any],
         *,
         role_monoculture_index: dict[str, float] | None = None,
+        bundle_state_by_role: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         agent_by_id = {agent.agent_id: agent for agent in agents}
         pools_by_role: dict[str, list[dict[str, Any]]] = {}
         role_parent_bundle_concentration_index: dict[str, float] = {}
         preserved_bundles: list[dict[str, Any]] = []
+        pruned_bundles: list[dict[str, Any]] = []
         preserved_signatures: set[str] = set()
         role_counts = Counter(agent.role for agent in agents)
         if role_monoculture_index is None:
@@ -312,14 +321,49 @@ class GenerationRunner:
                 candidates,
                 slot_count=self.config.roles.distribution.get(role, len(candidates)),
                 exploration_slots=BUNDLE_ARCHIVE_EXPLORATION_SLOTS if role in bundle_archive_roles else 0,
+                bundle_state_by_signature=(
+                    {} if bundle_state_by_role is None else bundle_state_by_role.get(role, {})
+                ),
             )
             pools_by_role[role] = pool
+            candidate_bundles = {
+                item["decision"].bundle_signature
+                for item in candidates
+                if item["decision"].bundle_signature
+            }
+            selected_bundles = {
+                item["bundle_signature"]
+                for item in pool
+                if item.get("bundle_signature")
+            }
             bundle_counts = Counter(
                 item["bundle_signature"] for item in pool if item.get("bundle_signature")
             )
             role_parent_bundle_concentration_index[role] = (
                 round(max(bundle_counts.values()) / len(pool), 4) if bundle_counts and pool else 0.0
             )
+            stale_state = {} if bundle_state_by_role is None else bundle_state_by_role.get(role, {})
+            for bundle_signature in sorted(candidate_bundles - selected_bundles):
+                state = stale_state.get(bundle_signature, {})
+                if int(state.get("stale_generations", 0)) >= BUNDLE_STALE_GENERATION_THRESHOLD:
+                    pruned_reason = "stale_bundle_pruned"
+                elif int(state.get("archive_decay_debt", 0)) > 0:
+                    pruned_reason = "archive_decay_pruned"
+                elif int(state.get("retention_debt", 0)) > 0:
+                    pruned_reason = "retention_decay_pruned"
+                else:
+                    pruned_reason = "bundle_pressure_pruned"
+                pruned_bundles.append(
+                    {
+                        "role": role,
+                        "bundle_signature": bundle_signature,
+                        "stale_generations": int(state.get("stale_generations", 0)),
+                        "clean_win_generations": int(state.get("clean_win_generations", 0)),
+                        "retention_debt": int(state.get("retention_debt", 0)),
+                        "archive_decay_debt": int(state.get("archive_decay_debt", 0)),
+                        "pruned_reason": pruned_reason,
+                    }
+                )
             for item in pool:
                 if not item.get("bundle_preserved"):
                     continue
@@ -344,8 +388,87 @@ class GenerationRunner:
             "pools_by_role": pools_by_role,
             "role_parent_bundle_concentration_index": role_parent_bundle_concentration_index,
             "preserved_bundles": preserved_bundles,
+            "pruned_bundles": pruned_bundles,
             "bundle_archive_roles": sorted(bundle_archive_roles),
         }
+
+    def _bundle_state_by_role(
+        self,
+        *,
+        generation_id: int,
+        previous_generation_id: int | None,
+        lineage_updates: list[dict[str, Any]],
+        selection: list[Any],
+    ) -> dict[str, dict[str, Any]]:
+        previous_state_by_role = {}
+        if previous_generation_id is not None:
+            previous_generation = self.storage.get_generation(previous_generation_id)
+            if previous_generation is not None:
+                previous_state_by_role = previous_generation.summary_json.get("selection_summary", {}).get(
+                    "bundle_state_by_role",
+                    {},
+                )
+
+        decisions_by_bundle: dict[tuple[str, str], list[Any]] = defaultdict(list)
+        for decision in selection:
+            if decision.bundle_signature is None:
+                continue
+            decisions_by_bundle[(decision.role, decision.bundle_signature)].append(decision)
+
+        updates_by_bundle: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for update in lineage_updates:
+            bundle_signature = update.get("bundle_signature")
+            if bundle_signature is None:
+                continue
+            updates_by_bundle[(update["role"], bundle_signature)].append(update)
+
+        bundle_state_by_role: dict[str, dict[str, Any]] = {}
+        for role in sorted({update["role"] for update in lineage_updates}):
+            role_states: dict[str, Any] = {}
+            role_signatures = {
+                bundle_signature
+                for update_role, bundle_signature in updates_by_bundle
+                if update_role == role
+            }
+            for bundle_signature in sorted(role_signatures):
+                prior_state = previous_state_by_role.get(role, {}).get(bundle_signature, {})
+                bundle_decisions = decisions_by_bundle.get((role, bundle_signature), [])
+                bundle_updates = updates_by_bundle.get((role, bundle_signature), [])
+                clean_win = any(
+                    decision.eligible and decision.quarantine_status == QUARANTINE_CLEAN
+                    for decision in bundle_decisions
+                )
+                preserved = any(decision.bundle_preserved for decision in bundle_decisions)
+                archive_generated = any(
+                    update.get("variant_origin") == "bundle_archive_exploration"
+                    for update in bundle_updates
+                )
+                clean_win_generations = int(prior_state.get("clean_win_generations", 0)) + int(clean_win)
+                preserved_generations = int(prior_state.get("preserved_generations", 0)) + int(preserved)
+                archive_generations = int(prior_state.get("archive_generations", 0)) + int(archive_generated)
+                retention_debt = max(0, preserved_generations - clean_win_generations)
+                archive_decay_debt = max(
+                    0,
+                    archive_generations - max(0, clean_win_generations - 1),
+                )
+                avg_score = round(
+                    statistics.fmean([decision.score for decision in bundle_decisions]),
+                    4,
+                ) if bundle_decisions else 0.0
+                role_states[bundle_signature] = {
+                    "age_generations": int(prior_state.get("age_generations", 0)) + 1,
+                    "clean_win_generations": clean_win_generations,
+                    "stale_generations": 0 if clean_win else int(prior_state.get("stale_generations", 0)) + 1,
+                    "preserved_generations": preserved_generations,
+                    "archive_generations": archive_generations,
+                    "retention_debt": retention_debt,
+                    "archive_decay_debt": archive_decay_debt,
+                    "avg_score": avg_score,
+                    "last_seen_generation_id": generation_id,
+                    "last_clean_generation_id": generation_id if clean_win else prior_state.get("last_clean_generation_id"),
+                }
+            bundle_state_by_role[role] = role_states
+        return bundle_state_by_role
 
     def _drift_pressure_roles(self, parent_context: dict[str, Any]) -> set[str]:
         prior_role_monoculture = parent_context.get("prior_role_monoculture", {})
@@ -934,7 +1057,17 @@ class GenerationRunner:
         )
         honored_contributions = [memorial.top_contribution for memorial in memorials if memorial.classification == "honored"]
         notable_failures = [memorial.failure_mode for memorial in memorials if memorial.failure_mode]
-        parent_pool_summary = self._parent_pool_summary(agents, selection)
+        bundle_state_by_role = self._bundle_state_by_role(
+            generation_id=generation_id,
+            previous_generation_id=previous_generation_id,
+            lineage_updates=lineage_updates,
+            selection=selection,
+        )
+        parent_pool_summary = self._parent_pool_summary(
+            agents,
+            selection,
+            bundle_state_by_role=bundle_state_by_role,
+        )
         preserved_by_agent = {
             item["agent_id"]: {
                 "bundle_preserved": True,
@@ -996,6 +1129,31 @@ class GenerationRunner:
             for item in lineage_updates
             if item["variant_origin"] == "bundle_archive_exploration"
         ]
+        stale_bundles = [
+            {
+                "role": role,
+                "bundle_signature": bundle_signature,
+                "stale_generations": state["stale_generations"],
+                "clean_win_generations": state["clean_win_generations"],
+                "retention_debt": state["retention_debt"],
+                "archive_decay_debt": state["archive_decay_debt"],
+            }
+            for role, role_states in bundle_state_by_role.items()
+            for bundle_signature, state in role_states.items()
+            if state["stale_generations"] >= BUNDLE_STALE_GENERATION_THRESHOLD
+        ]
+        decaying_bundles = [
+            {
+                "role": role,
+                "bundle_signature": bundle_signature,
+                "retention_debt": state["retention_debt"],
+                "archive_decay_debt": state["archive_decay_debt"],
+                "stale_generations": state["stale_generations"],
+            }
+            for role, role_states in bundle_state_by_role.items()
+            for bundle_signature, state in role_states.items()
+            if state["retention_debt"] > 0 or state["archive_decay_debt"] > 0
+        ]
         selection_summary = {
             "eligible": sum(decision.eligible for decision in augmented_selection),
             "propagation_blocked": sum(decision.propagation_blocked for decision in augmented_selection),
@@ -1014,6 +1172,13 @@ class GenerationRunner:
             "bundle_archive_roles": parent_pool_summary["bundle_archive_roles"],
             "bundle_archive_lineages": bundle_archive_lineages,
             "bundle_archive_count": len(bundle_archive_lineages),
+            "bundle_state_by_role": bundle_state_by_role,
+            "stale_bundles": stale_bundles,
+            "stale_bundle_count": len(stale_bundles),
+            "decaying_bundles": decaying_bundles,
+            "decaying_bundle_count": len(decaying_bundles),
+            "pruned_bundles": parent_pool_summary["pruned_bundles"],
+            "pruned_bundle_count": len(parent_pool_summary["pruned_bundles"]),
             "preserved_bundles_by_role": {
                 role: [item["bundle_signature"] for item in parent_pool_summary["preserved_bundles"] if item["role"] == role]
                 for role in sorted({item["role"] for item in parent_pool_summary["preserved_bundles"]})
@@ -1091,6 +1256,9 @@ class GenerationRunner:
                 f"- diversity_priority_lineages: {', '.join(summary['selection_summary']['diversity_priority_lineages']) or 'none'}",
                 f"- preserved_bundle_lineages: {', '.join(summary['selection_summary'].get('preserved_bundle_lineages', [])) or 'none'}",
                 f"- bundle_archive_lineages: {', '.join(summary['selection_summary'].get('bundle_archive_lineages', [])) or 'none'}",
+                f"- pruned_bundle_count: {summary['selection_summary'].get('pruned_bundle_count', 0)}",
+                f"- stale_bundle_count: {summary['selection_summary'].get('stale_bundle_count', 0)}",
+                f"- decaying_bundle_count: {summary['selection_summary'].get('decaying_bundle_count', 0)}",
                 "",
                 "## Quarantine",
                 "",
@@ -1129,6 +1297,17 @@ class GenerationRunner:
             )
         for role in summary["selection_summary"].get("bundle_archive_roles", []):
             lines.append(f"- archive_role:{role}")
+        for item in summary["selection_summary"].get("pruned_bundles", []):
+            lines.append(
+                f"- pruned:{item['role']}:{item['bundle_signature']} stale={item['stale_generations']} "
+                f"retention_debt={item.get('retention_debt', 0)} archive_decay_debt={item.get('archive_decay_debt', 0)} "
+                f"reason={item.get('pruned_reason', 'bundle_pressure_pruned')}"
+            )
+        for item in summary["selection_summary"].get("decaying_bundles", []):
+            lines.append(
+                f"- decaying:{item['role']}:{item['bundle_signature']} stale={item['stale_generations']} "
+                f"retention_debt={item['retention_debt']} archive_decay_debt={item['archive_decay_debt']}"
+            )
         lines.extend(["", "## Monoculture", ""])
         for role, value in summary["selection_summary"].get("role_monoculture_index", {}).items():
             lines.append(f"- {role}: {value}")

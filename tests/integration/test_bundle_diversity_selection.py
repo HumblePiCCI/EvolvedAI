@@ -67,6 +67,8 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert any(metric["bundle_turnover_rate"] > 0.0 for metric in post_root)
         assert any(metric["new_bundle_win_rate"] > 0.0 for metric in post_root)
         assert any(metric["exploration_bundle_survival_rate"] > 0.0 for metric in post_root)
+        assert any(metric["decaying_bundle_count"] > 0 for metric in post_root)
+        assert any(metric["pruned_bundle_count"] > 0 for metric in post_root)
         assert max(metric["prompt_bundle_count"] for metric in post_root) > report["generation_metrics"][0]["prompt_bundle_count"]
 
         latest_generation = storage.get_generation(generation_ids[-1])
@@ -77,5 +79,8 @@ def test_bundle_archive_selection_adds_turnover_without_reintroducing_bundle_col
         assert latest_summary["selection_summary"]["bundle_archive_roles"] == ["citizen"]
         assert latest_summary["selection_summary"]["role_bundle_count"]["citizen"] >= 5
         assert latest_summary["selection_summary"]["role_parent_bundle_concentration_index"]["citizen"] < 0.5
+        assert "stale_bundle_count" in latest_summary["selection_summary"]
+        assert "decaying_bundle_count" in latest_summary["selection_summary"]
+        assert "pruned_bundle_count" in latest_summary["selection_summary"]
     finally:
         storage.close()
