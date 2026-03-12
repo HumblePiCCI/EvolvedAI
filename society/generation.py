@@ -19,7 +19,7 @@ from society.constants import (
     TABOO_REGISTRY_VERSION,
     TERMINATED_STATUS,
 )
-from society.inheritance import assemble_inheritance_package, build_taboo_registry
+from society.inheritance import assemble_inheritance_package, build_role_scoped_taboo_registry
 from society.lifespan import LifespanRunner
 from society.memorials import build_memorial_record, group_evals_by_agent
 from society.memory import build_private_scratchpad
@@ -159,7 +159,7 @@ class GenerationRunner:
                 "eligible_by_role": {},
                 "artifacts_by_agent": {},
                 "memorials_by_agent": {},
-                "taboo_tags": [],
+                "registry_taboo_tags_by_role": {},
             }
 
         previous_agents = self.storage.list_generation_agents(previous_generation_id)
@@ -167,11 +167,14 @@ class GenerationRunner:
         previous_memorials = self.storage.list_generation_memorials(previous_generation_id)
         previous_evals = self.storage.list_generation_evals(previous_generation_id)
         previous_selection = select_candidates(previous_agents, previous_evals, previous_artifacts)
-        prior_memorials = self.storage.list_memorials_before_generation(generation_id)
         previous_generation = self.storage.get_generation(previous_generation_id)
         previous_lineage_updates = [] if previous_generation is None else previous_generation.summary_json.get("lineage_updates", [])
+        prior_registry_by_role = (
+            {} if previous_generation is None else previous_generation.summary_json.get("registry_taboo_tags_by_role", {})
+        )
 
         agent_by_id = {agent.agent_id: agent for agent in previous_agents}
+        role_by_agent_id = {agent.agent_id: agent.role for agent in previous_agents}
         artifacts_by_agent: dict[str, list[ArtifactRecord]] = defaultdict(list)
         memorials_by_agent: dict[str, list[Any]] = defaultdict(list)
         taboo_tags_by_agent: dict[str, list[str]] = {
@@ -198,13 +201,22 @@ class GenerationRunner:
                 reverse=True,
             )
 
+        current_registry_by_role = build_role_scoped_taboo_registry(
+            previous_memorials,
+            role_by_agent_id=role_by_agent_id,
+        )
+        registry_taboo_tags_by_role = {
+            role: sorted({*prior_registry_by_role.get(role, []), *current_registry_by_role.get(role, [])})
+            for role in set(prior_registry_by_role) | set(current_registry_by_role)
+        }
+
         return {
             "previous_generation_id": previous_generation_id,
             "eligible_by_role": dict(eligible_by_role),
             "artifacts_by_agent": dict(artifacts_by_agent),
             "memorials_by_agent": dict(memorials_by_agent),
             "taboo_tags_by_agent": taboo_tags_by_agent,
-            "taboo_tags": build_taboo_registry(prior_memorials),
+            "registry_taboo_tags_by_role": registry_taboo_tags_by_role,
         }
 
     def run(self, *, generation_id: int | None = None, seed: int | None = None, dry_run: bool = False) -> dict[str, Any]:
@@ -487,7 +499,8 @@ class GenerationRunner:
             parent_agent = None if parent_assignment is None else parent_assignment["agent"]
             parent_lineage_ids = [] if parent_agent is None else [parent_agent.lineage_id]
             parent_taboo_tags = [] if parent_agent is None else parent_context["taboo_tags_by_agent"].get(parent_agent.agent_id, [])
-            inherited_taboo_tags = sorted({*parent_context["taboo_tags"], *parent_taboo_tags})
+            registry_taboo_tags = parent_context["registry_taboo_tags_by_role"].get(role, [])
+            inherited_taboo_tags = sorted({*registry_taboo_tags, *parent_taboo_tags})
             inherited = assemble_inheritance_package(
                 artifacts=[]
                 if parent_agent is None
@@ -539,7 +552,7 @@ class GenerationRunner:
                     "inheritance_source_agent_id": None if parent_agent is None else parent_agent.agent_id,
                     "inheritance_source_generation_id": parent_context["previous_generation_id"],
                     "lineage_taboo_tags": parent_taboo_tags,
-                    "registry_taboo_tags": parent_context["taboo_tags"],
+                    "registry_taboo_tags": registry_taboo_tags,
                     "inherited_artifact_ids": inherited.artifact_ids,
                     "inherited_memorial_ids": inherited.memorial_ids,
                     "taboo_tags": inherited.taboo_tags,
@@ -655,6 +668,17 @@ class GenerationRunner:
             "selection_summary": selection_summary,
             "selection_outcome": [decision.model_dump(mode="json") for decision in selection],
             "lineage_updates": lineage_updates,
+            "registry_taboo_tags_by_role": {
+                role: sorted(
+                    {
+                        tag
+                        for update in lineage_updates
+                        if update["role"] == role
+                        for tag in update.get("registry_taboo_tags", [])
+                    }
+                )
+                for role in sorted({update["role"] for update in lineage_updates})
+            },
             "inheritance_effect": inheritance_effect,
             "suspicious_lineages": suspicious_lineages,
             "top_contributions": honored_contributions[:3] or [artifact.summary for artifact in artifacts[:3]],

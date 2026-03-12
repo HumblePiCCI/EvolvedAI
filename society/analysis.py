@@ -310,7 +310,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         notes.append(
             "Inheritance warning effect: "
             f"{avoided_recurrence}/{warned_lineages} warned lineages avoided the warned failure, "
-            f"{repeated_warning} repeated it, {shifted_failure} failed in a different way."
+            f"{repeated_warning} repeated it, {shifted_failure} also failed in a different way."
         )
 
     return {
