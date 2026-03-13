@@ -121,6 +121,8 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f"inherited_memorials={len(item['inherited_memorial_ids'])} "
                 f"transfer_payload_active={item.get('transfer_payload_active', False)} "
                 f"transfer_payload_used={item.get('transfer_payload_used', False)} "
+                f"transfer_payload_trigger_matched={item.get('transfer_payload_trigger_matched', False)} "
+                f"transfer_payload_backoff_active={item.get('transfer_payload_backoff_active', False)} "
                 f"transfer_payload_used_steps={item.get('transfer_payload_used_steps', 0)} "
                 f"taboo_tags={','.join(item['taboo_tags']) or 'none'} "
                 f"variant={item.get('prompt_variant_id', 'none')} "
@@ -131,6 +133,16 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 lines.append(
                     "    transfer_payload_guidance="
                     + " | ".join(item.get("transfer_payload_guidance", []))
+                )
+            if item.get("transfer_payload_trigger_conditions"):
+                lines.append(
+                    "    transfer_payload_trigger_conditions="
+                    + ",".join(item.get("transfer_payload_trigger_conditions", []))
+                )
+            if item.get("transfer_payload_backoff_conditions"):
+                lines.append(
+                    "    transfer_payload_backoff_conditions="
+                    + ",".join(item.get("transfer_payload_backoff_conditions", []))
                 )
         lines.append("")
 
@@ -183,6 +195,10 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             lines.append(f"  archive_transfer_payload_success_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_transfer_payload_failure_roles", []):
             lines.append(f"  archive_transfer_payload_failure_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_transfer_trigger_match_roles", []):
+            lines.append(f"  archive_transfer_trigger_match_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_transfer_misapplied_roles", []):
+            lines.append(f"  archive_transfer_misapplied_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_eviction_roles", []):
             lines.append(f"  archive_eviction_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_repeat_eviction_roles", []):
@@ -263,12 +279,40 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             f"{summary.get('selection_summary', {}).get('archive_transfer_payload_used_rate', 0.0)}"
         )
         lines.append(
+            "  archive_transfer_payload_trigger_match_count:"
+            f"{summary.get('selection_summary', {}).get('archive_transfer_payload_trigger_match_count', 0)}"
+        )
+        lines.append(
+            "  archive_transfer_payload_trigger_match_rate:"
+            f"{summary.get('selection_summary', {}).get('archive_transfer_payload_trigger_match_rate', 0.0)}"
+        )
+        lines.append(
+            "  archive_transfer_payload_backoff_count:"
+            f"{summary.get('selection_summary', {}).get('archive_transfer_payload_backoff_count', 0)}"
+        )
+        lines.append(
+            "  archive_transfer_payload_misapplied_count:"
+            f"{summary.get('selection_summary', {}).get('archive_transfer_payload_misapplied_count', 0)}"
+        )
+        lines.append(
+            "  archive_transfer_payload_misapplied_rate:"
+            f"{summary.get('selection_summary', {}).get('archive_transfer_payload_misapplied_rate', 0.0)}"
+        )
+        lines.append(
             "  archive_transfer_payload_success_count:"
             f"{summary.get('selection_summary', {}).get('archive_transfer_payload_success_count', 0)}"
         )
         lines.append(
             "  archive_transfer_payload_success_rate:"
             f"{summary.get('selection_summary', {}).get('archive_transfer_payload_success_rate', 0.0)}"
+        )
+        lines.append(
+            "  archive_transfer_payload_matched_lift:"
+            f"{summary.get('selection_summary', {}).get('archive_transfer_payload_matched_lift', 0.0)}"
+        )
+        lines.append(
+            "  archive_transfer_payload_mismatched_lift:"
+            f"{summary.get('selection_summary', {}).get('archive_transfer_payload_mismatched_lift', 0.0)}"
         )
         lines.append(
             f"  archive_admitted_count:{summary.get('selection_summary', {}).get('archive_admitted_count', 0)}"
@@ -436,7 +480,11 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f" payload_available={item.get('archive_transfer_payload_available_count', 0)}"
                 f" payload_used={item.get('archive_transfer_payload_used_count', 0)}"
                 f" payload_used_rate={item.get('archive_transfer_payload_used_rate', 0.0)}"
+                f" trigger_match_rate={item.get('archive_transfer_payload_trigger_match_rate', 0.0)}"
+                f" misapplied_rate={item.get('archive_transfer_payload_misapplied_rate', 0.0)}"
                 f" payload_success_rate={item.get('archive_transfer_payload_success_rate', 0.0)}"
+                f" matched_lift={item.get('archive_transfer_payload_matched_child_mean_lift', 0.0)}"
+                f" mismatched_lift={item.get('archive_transfer_payload_mismatched_child_mean_lift', 0.0)}"
             )
         for item in summary.get("selection_summary", {}).get("archive_evicted_bundles", []):
             lines.append(

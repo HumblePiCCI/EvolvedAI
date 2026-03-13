@@ -137,6 +137,8 @@ class InheritancePackage(StrictModel):
     transfer_context: str | None = None
     transfer_guidance: list[str] = Field(default_factory=list)
     transfer_failure_avoidance: list[str] = Field(default_factory=list)
+    transfer_trigger_conditions: list[str] = Field(default_factory=list)
+    transfer_backoff_conditions: list[str] = Field(default_factory=list)
     transfer_expected_lift: float = 0.0
     transfer_success_rate: float = 0.0
 

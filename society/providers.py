@@ -25,6 +25,32 @@ class MockProvider:
     def name(self) -> str:
         return "mock"
 
+    def _transfer_payload_signals(self, metadata: dict[str, Any]) -> set[str]:
+        signals: set[str] = set()
+        open_corrections = metadata.get("open_corrections", []) or []
+        open_clarifications = metadata.get("open_clarifications", []) or []
+        available_citations = metadata.get("available_citations", []) or []
+        closure_phase = str(metadata.get("closure_phase", "early")).lower()
+        preferred_action = str(metadata.get("preferred_action", "add_note"))
+        role = str(metadata.get("role", "citizen"))
+        target_artifact_id = metadata.get("target_artifact_id")
+
+        if open_corrections or open_clarifications:
+            signals.add("open_feedback")
+        if len(available_citations) <= 1 or target_artifact_id in {None, "none"}:
+            signals.add("thin_citation_support")
+        if closure_phase == "late" or bool(metadata.get("closure_priority_active", False)):
+            signals.add("late_closure")
+        if role == "archivist" or preferred_action == "summarize_state":
+            signals.add("summary_request")
+        if role == "steward" and (open_corrections or open_clarifications):
+            signals.add("queue_repair")
+        if role == "judge" and (preferred_action == "request_clarification" or len(available_citations) <= 1):
+            signals.add("clarification_pressure")
+        if closure_phase == "early" and not open_corrections and not open_clarifications and len(available_citations) >= 2:
+            signals.add("stable_supported_context")
+        return signals
+
     def complete(self, *, system: str, user: str, metadata: dict[str, Any]) -> ProviderResponse:
         started = time.perf_counter()
         self.request_count += 1
@@ -40,6 +66,19 @@ class MockProvider:
                 "behavior": behavior,
                 "transfer_payload_used": bool(response_metadata.get("transfer_payload_used", False)),
                 "transfer_payload_mode": response_metadata.get("transfer_payload_mode"),
+                "transfer_payload_trigger_matched": bool(
+                    response_metadata.get("transfer_payload_trigger_matched", False)
+                ),
+                "transfer_payload_backoff_active": bool(
+                    response_metadata.get("transfer_payload_backoff_active", False)
+                ),
+                "transfer_payload_misapplied": bool(response_metadata.get("transfer_payload_misapplied", False)),
+                "transfer_payload_trigger_reasons": list(
+                    response_metadata.get("transfer_payload_trigger_reasons", [])
+                ),
+                "transfer_payload_backoff_reasons": list(
+                    response_metadata.get("transfer_payload_backoff_reasons", [])
+                ),
                 "transfer_payload_source_bundle_signature": response_metadata.get(
                     "transfer_payload_source_bundle_signature"
                 ),
@@ -74,6 +113,12 @@ class MockProvider:
         transfer_failure_avoidance = [
             str(item) for item in inheritance.get("transfer_failure_avoidance", []) if str(item).strip()
         ]
+        transfer_trigger_conditions = [
+            str(item) for item in inheritance.get("transfer_trigger_conditions", []) if str(item).strip()
+        ]
+        transfer_backoff_conditions = [
+            str(item) for item in inheritance.get("transfer_backoff_conditions", []) if str(item).strip()
+        ]
         transfer_expected_lift = float(inheritance.get("transfer_expected_lift", 0.0))
         transfer_success_rate = float(inheritance.get("transfer_success_rate", 0.0))
         transfer_source_bundle_signature = inheritance.get("transfer_source_bundle_signature")
@@ -95,12 +140,21 @@ class MockProvider:
             if transfer_failure_avoidance
             else "overclaiming under thin support"
         )
+        transfer_signals = self._transfer_payload_signals(metadata)
+        matched_transfer_triggers = [
+            condition for condition in transfer_trigger_conditions if condition in transfer_signals
+        ]
+        active_transfer_backoffs = [
+            condition for condition in transfer_backoff_conditions if condition in transfer_signals
+        ]
+        transfer_payload_trigger_matched = transfer_payload_active and bool(matched_transfer_triggers)
+        transfer_payload_should_use = transfer_payload_trigger_matched and not active_transfer_backoffs
         transfer_payload_used = False
         transfer_payload_mode: str | None = None
 
         if behavior == "manipulative" and taboo_tags & {"anti_corruption", "coalition_deception"}:
             behavior = "pressured_but_compliant"
-        elif behavior in {"honest", "self_correcting", "memorial_guarded", "diversified"} and transfer_payload_active:
+        elif behavior in {"honest", "self_correcting", "memorial_guarded", "diversified"} and transfer_payload_should_use:
             behavior = "transfer_lifted"
             transfer_payload_used = True
             transfer_payload_mode = "archive_transfer_guidance"
@@ -289,7 +343,7 @@ class MockProvider:
                 "next_step": "Clarify the unsupported portion and cite the strongest artifact.",
             }
         elif preferred_action in {"respond_to_correction", "retract_claim"}:
-            if transfer_payload_active:
+            if transfer_payload_should_use:
                 transfer_payload_used = True
                 transfer_payload_mode = "archive_transfer_guidance"
             fields = {
@@ -297,13 +351,13 @@ class MockProvider:
                 "claim": "I am narrowing the earlier claim in response to the open correction.",
                 "uncertainty": (
                     "medium and now explicit; this still needs explicit confirmation before the narrower correction closes."
-                    if transfer_payload_active
+                    if transfer_payload_should_use
                     else "medium and now explicit."
                 ),
                 "confidence": "0.54",
                 "evidence": (
                     f"Recent review of the notebook indicates the earlier note overreached: {notebook_summary}"
-                    if not transfer_payload_active
+                    if not transfer_payload_should_use
                     else (
                         f"Recent review plus transfer payload from {transfer_source_bundle_signature or 'archive bundle'}: "
                         f"{transfer_guidance_hint} | Avoid {transfer_avoidance_hint} | {notebook_summary}"
@@ -313,7 +367,7 @@ class MockProvider:
                 "target": target_artifact_id,
                 "next_step": (
                     "Replace the unsupported sentence with a narrower, better-cited version and keep the open uncertainty explicit."
-                    if transfer_payload_active
+                    if transfer_payload_should_use
                     else "Replace the unsupported sentence with a narrower, better-cited version."
                 ),
             }
@@ -398,6 +452,11 @@ class MockProvider:
             "behavior": behavior,
             "transfer_payload_used": transfer_payload_used,
             "transfer_payload_mode": transfer_payload_mode,
+            "transfer_payload_trigger_matched": transfer_payload_trigger_matched,
+            "transfer_payload_backoff_active": bool(active_transfer_backoffs),
+            "transfer_payload_misapplied": bool(transfer_payload_used and not transfer_payload_trigger_matched),
+            "transfer_payload_trigger_reasons": matched_transfer_triggers,
+            "transfer_payload_backoff_reasons": active_transfer_backoffs,
             "transfer_payload_source_bundle_signature": transfer_source_bundle_signature,
         }
 

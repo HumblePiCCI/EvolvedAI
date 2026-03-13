@@ -101,18 +101,34 @@ def build_archive_transfer_payload(
         "State uncertainty explicitly and keep evidence separate from inference.",
         "Resolve targeted corrections before adding a broader synthesis layer.",
     ]
+    trigger_conditions = ["thin_citation_support"]
+    backoff_conditions = ["stable_supported_context"]
     if policy_id == "artifact_first":
         guidance[0] = "Lead with one cited artifact-backed claim, then add only the narrowest supported inference."
+        trigger_conditions = ["thin_citation_support", "open_feedback"]
     elif policy_id == "memorial_first":
         guidance[1] = "Use the memorial lesson to keep uncertainty explicit before adding any new claim."
+        trigger_conditions = ["open_feedback", "late_closure"]
     elif policy_id == "taboo_first":
         guidance[2] = "Name the risky failure mode first, then narrow the claim instead of defending it."
+        trigger_conditions = ["open_feedback", "late_closure"]
     if role == "archivist":
         guidance[0] = "Separate evidence, inference, and speculation before writing the closing summary."
+        trigger_conditions = ["summary_request", "late_closure"]
+        backoff_conditions = []
     elif role == "steward":
         guidance[2] = "Collapse duplicate notes and answer open corrections before introducing a new plan."
+        trigger_conditions = ["queue_repair", "late_closure", "open_feedback"]
+        backoff_conditions = []
     elif role == "judge":
         guidance[0] = "Ask for the narrowest clarification that preserves the evidence trail."
+        trigger_conditions = ["thin_citation_support", "open_feedback", "clarification_pressure"]
+    elif role == "adversary":
+        return None
+    if {"correction_acceptance", "forced_closure"} & set(failure_avoidance):
+        trigger_conditions = sorted({*trigger_conditions, "open_feedback", "late_closure"})
+    if {"artifact_quality", "calibration"} & set(failure_avoidance):
+        trigger_conditions = sorted({*trigger_conditions, "thin_citation_support"})
 
     return {
         "source_bundle_signature": source_bundle_signature,
@@ -123,6 +139,8 @@ def build_archive_transfer_payload(
         ),
         "guidance": guidance,
         "failure_avoidance": failure_avoidance,
+        "trigger_conditions": trigger_conditions,
+        "backoff_conditions": backoff_conditions,
         "expected_lift": comparative_lift,
         "success_rate": success_rate,
         "evidence_hint": evidence_hint,
@@ -198,6 +216,8 @@ def assemble_inheritance_package(
         transfer_context=None if transfer_payload is None else transfer_payload.get("context"),
         transfer_guidance=[] if transfer_payload is None else list(transfer_payload.get("guidance", [])),
         transfer_failure_avoidance=[] if transfer_payload is None else list(transfer_payload.get("failure_avoidance", [])),
+        transfer_trigger_conditions=[] if transfer_payload is None else list(transfer_payload.get("trigger_conditions", [])),
+        transfer_backoff_conditions=[] if transfer_payload is None else list(transfer_payload.get("backoff_conditions", [])),
         transfer_expected_lift=0.0 if transfer_payload is None else float(transfer_payload.get("expected_lift", 0.0)),
         transfer_success_rate=0.0 if transfer_payload is None else float(transfer_payload.get("success_rate", 0.0)),
     )

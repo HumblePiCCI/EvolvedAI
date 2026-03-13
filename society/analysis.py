@@ -172,10 +172,20 @@ def lineage_entries(
             "transfer_payload_context": lineage_update.get("transfer_payload_context"),
             "transfer_payload_guidance": lineage_update.get("transfer_payload_guidance", []),
             "transfer_payload_failure_avoidance": lineage_update.get("transfer_payload_failure_avoidance", []),
+            "transfer_payload_trigger_conditions": lineage_update.get("transfer_payload_trigger_conditions", []),
+            "transfer_payload_backoff_conditions": lineage_update.get("transfer_payload_backoff_conditions", []),
             "transfer_payload_expected_lift": lineage_update.get("transfer_payload_expected_lift", 0.0),
             "transfer_payload_source_success_rate": lineage_update.get("transfer_payload_source_success_rate", 0.0),
             "transfer_payload_used": lineage_update.get("transfer_payload_used", False),
             "transfer_payload_used_steps": lineage_update.get("transfer_payload_used_steps", 0),
+            "transfer_payload_trigger_matched": lineage_update.get("transfer_payload_trigger_matched", False),
+            "transfer_payload_trigger_match_steps": lineage_update.get("transfer_payload_trigger_match_steps", 0),
+            "transfer_payload_backoff_active": lineage_update.get("transfer_payload_backoff_active", False),
+            "transfer_payload_backoff_steps": lineage_update.get("transfer_payload_backoff_steps", 0),
+            "transfer_payload_misapplied": lineage_update.get("transfer_payload_misapplied", False),
+            "transfer_payload_misapplied_steps": lineage_update.get("transfer_payload_misapplied_steps", 0),
+            "transfer_payload_trigger_reasons": lineage_update.get("transfer_payload_trigger_reasons", []),
+            "transfer_payload_backoff_reasons": lineage_update.get("transfer_payload_backoff_reasons", []),
             "transfer_payload_modes": lineage_update.get("transfer_payload_modes", []),
             "transfer_payload_evidence_refs": lineage_update.get("transfer_payload_evidence_refs", []),
             "inherited_artifact_ids": inherited_artifact_ids,
@@ -286,6 +296,8 @@ def render_lineage_report(report: dict[str, Any]) -> str:
         lines.append(
             f"  transfer_payload_active={entry['transfer_payload_active']} "
             f"transfer_payload_used={entry['transfer_payload_used']} "
+            f"transfer_payload_trigger_matched={entry['transfer_payload_trigger_matched']} "
+            f"transfer_payload_backoff_active={entry['transfer_payload_backoff_active']} "
             f"transfer_payload_used_steps={entry['transfer_payload_used_steps']} "
             f"transfer_payload_source={entry['transfer_payload_source_bundle_signature'] or 'none'} "
             f"transfer_payload_modes={','.join(entry['transfer_payload_modes']) or 'none'}"
@@ -300,10 +312,28 @@ def render_lineage_report(report: dict[str, Any]) -> str:
             lines.append(
                 "  transfer_payload_guidance=" + " | ".join(entry["transfer_payload_guidance"])
             )
+        if entry["transfer_payload_trigger_conditions"]:
+            lines.append(
+                "  transfer_payload_trigger_conditions="
+                + ",".join(entry["transfer_payload_trigger_conditions"])
+            )
+        if entry["transfer_payload_backoff_conditions"]:
+            lines.append(
+                "  transfer_payload_backoff_conditions="
+                + ",".join(entry["transfer_payload_backoff_conditions"])
+            )
         if entry["transfer_payload_failure_avoidance"]:
             lines.append(
                 "  transfer_payload_failure_avoidance="
                 + ",".join(entry["transfer_payload_failure_avoidance"])
+            )
+        if entry["transfer_payload_trigger_reasons"]:
+            lines.append(
+                "  transfer_payload_trigger_reasons=" + ",".join(entry["transfer_payload_trigger_reasons"])
+            )
+        if entry["transfer_payload_backoff_reasons"]:
+            lines.append(
+                "  transfer_payload_backoff_reasons=" + ",".join(entry["transfer_payload_backoff_reasons"])
             )
         for artifact in entry["inherited_artifacts"]:
             lines.append(
@@ -528,6 +558,14 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     "bundle_archive_transfer_payload_failure_roles",
                     [],
                 ),
+                "bundle_archive_transfer_trigger_match_roles": selection_summary.get(
+                    "bundle_archive_transfer_trigger_match_roles",
+                    [],
+                ),
+                "bundle_archive_transfer_misapplied_roles": selection_summary.get(
+                    "bundle_archive_transfer_misapplied_roles",
+                    [],
+                ),
                 "bundle_archive_eviction_roles": selection_summary.get(
                     "bundle_archive_eviction_roles",
                     [],
@@ -612,12 +650,40 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     "archive_transfer_payload_used_rate",
                     0.0,
                 ),
+                "archive_transfer_payload_trigger_match_count": selection_summary.get(
+                    "archive_transfer_payload_trigger_match_count",
+                    0,
+                ),
+                "archive_transfer_payload_trigger_match_rate": selection_summary.get(
+                    "archive_transfer_payload_trigger_match_rate",
+                    0.0,
+                ),
+                "archive_transfer_payload_backoff_count": selection_summary.get(
+                    "archive_transfer_payload_backoff_count",
+                    0,
+                ),
+                "archive_transfer_payload_misapplied_count": selection_summary.get(
+                    "archive_transfer_payload_misapplied_count",
+                    0,
+                ),
+                "archive_transfer_payload_misapplied_rate": selection_summary.get(
+                    "archive_transfer_payload_misapplied_rate",
+                    0.0,
+                ),
                 "archive_transfer_payload_success_count": selection_summary.get(
                     "archive_transfer_payload_success_count",
                     0,
                 ),
                 "archive_transfer_payload_success_rate": selection_summary.get(
                     "archive_transfer_payload_success_rate",
+                    0.0,
+                ),
+                "archive_transfer_payload_matched_lift": selection_summary.get(
+                    "archive_transfer_payload_matched_lift",
+                    0.0,
+                ),
+                "archive_transfer_payload_mismatched_lift": selection_summary.get(
+                    "archive_transfer_payload_mismatched_lift",
                     0.0,
                 ),
                 "archive_admitted_count": selection_summary.get("archive_admitted_count", 0),
@@ -1100,8 +1166,15 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"archive_transfer_payload_available_count={metric['archive_transfer_payload_available_count']} "
             f"archive_transfer_payload_used_count={metric['archive_transfer_payload_used_count']} "
             f"archive_transfer_payload_used_rate={metric['archive_transfer_payload_used_rate']} "
+            f"archive_transfer_payload_trigger_match_count={metric['archive_transfer_payload_trigger_match_count']} "
+            f"archive_transfer_payload_trigger_match_rate={metric['archive_transfer_payload_trigger_match_rate']} "
+            f"archive_transfer_payload_backoff_count={metric['archive_transfer_payload_backoff_count']} "
+            f"archive_transfer_payload_misapplied_count={metric['archive_transfer_payload_misapplied_count']} "
+            f"archive_transfer_payload_misapplied_rate={metric['archive_transfer_payload_misapplied_rate']} "
             f"archive_transfer_payload_success_count={metric['archive_transfer_payload_success_count']} "
             f"archive_transfer_payload_success_rate={metric['archive_transfer_payload_success_rate']} "
+            f"archive_transfer_payload_matched_lift={metric['archive_transfer_payload_matched_lift']} "
+            f"archive_transfer_payload_mismatched_lift={metric['archive_transfer_payload_mismatched_lift']} "
             f"archive_admitted_count={metric['archive_admitted_count']} "
             f"newly_admitted_count={metric['newly_admitted_count']} "
             f"post_admission_grace_count={metric['post_admission_grace_count']} "
@@ -1206,6 +1279,16 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             lines.append(
                 "  bundle_archive_transfer_payload_failure_roles="
                 + ",".join(metric["bundle_archive_transfer_payload_failure_roles"])
+            )
+        if metric["bundle_archive_transfer_trigger_match_roles"]:
+            lines.append(
+                "  bundle_archive_transfer_trigger_match_roles="
+                + ",".join(metric["bundle_archive_transfer_trigger_match_roles"])
+            )
+        if metric["bundle_archive_transfer_misapplied_roles"]:
+            lines.append(
+                "  bundle_archive_transfer_misapplied_roles="
+                + ",".join(metric["bundle_archive_transfer_misapplied_roles"])
             )
         if metric["bundle_archive_eviction_roles"]:
             lines.append(
