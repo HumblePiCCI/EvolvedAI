@@ -44,7 +44,11 @@ from society.constants import (
     TABOO_REGISTRY_VERSION,
     TERMINATED_STATUS,
 )
-from society.inheritance import assemble_inheritance_package, build_role_scoped_taboo_registry
+from society.inheritance import (
+    assemble_inheritance_package,
+    build_archive_transfer_payload,
+    build_role_scoped_taboo_registry,
+)
 from society.lifespan import LifespanRunner
 from society.memorials import build_memorial_record, group_evals_by_agent
 from society.memory import build_private_scratchpad
@@ -765,6 +769,9 @@ class GenerationRunner:
                     "eligible": decision.eligible,
                     "quarantine_status": decision.quarantine_status,
                     "public_score": decision.public_score,
+                    "transfer_payload_active": bool(update.get("transfer_payload_active", False)),
+                    "transfer_payload_used": bool(update.get("transfer_payload_used", False)),
+                    "transfer_payload_used_steps": int(update.get("transfer_payload_used_steps", 0)),
                     "source_archive_admitted": bool(update.get("inheritance_source_archive_admitted", False)),
                     "source_archive_value_qualified": bool(
                         update.get("inheritance_source_archive_value_qualified", False)
@@ -897,6 +904,30 @@ class GenerationRunner:
                     round(float(item["public_score"]) - role_incumbent_benchmark, 4)
                     for item in transfer_updates
                 ] if role_incumbent_benchmark > 0 else []
+                transfer_payload_updates = [item for item in transfer_updates if item["transfer_payload_active"]]
+                transfer_payload_used_updates = [item for item in transfer_payload_updates if item["transfer_payload_used"]]
+                archive_transfer_payload_available_count = len(transfer_payload_updates)
+                archive_transfer_payload_used_count = len(transfer_payload_used_updates)
+                archive_transfer_payload_used_rate = (
+                    round(archive_transfer_payload_used_count / archive_transfer_payload_available_count, 4)
+                    if archive_transfer_payload_available_count
+                    else 0.0
+                )
+                archive_transfer_payload_success_count = sum(
+                    int(
+                        item["eligible"]
+                        and item["quarantine_status"] == QUARANTINE_CLEAN
+                        and role_incumbent_benchmark > 0
+                        and round(float(item["public_score"]) - role_incumbent_benchmark, 4)
+                        >= BUNDLE_ARCHIVE_COMPARATIVE_LIFT_MIN
+                    )
+                    for item in transfer_payload_used_updates
+                )
+                archive_transfer_payload_success_rate = (
+                    round(archive_transfer_payload_success_count / archive_transfer_payload_used_count, 4)
+                    if archive_transfer_payload_used_count
+                    else 0.0
+                )
                 archive_transfer_child_mean_lift = (
                     round(statistics.fmean(archive_transfer_child_lifts), 4)
                     if archive_transfer_child_lifts
@@ -1217,6 +1248,11 @@ class GenerationRunner:
                     "archive_transfer_lift_retention": archive_transfer_lift_retention,
                     "archive_transfer_success_streak": archive_transfer_success_streak,
                     "archive_transfer_failure_streak": archive_transfer_failure_streak,
+                    "archive_transfer_payload_available_count": archive_transfer_payload_available_count,
+                    "archive_transfer_payload_used_count": archive_transfer_payload_used_count,
+                    "archive_transfer_payload_used_rate": archive_transfer_payload_used_rate,
+                    "archive_transfer_payload_success_count": archive_transfer_payload_success_count,
+                    "archive_transfer_payload_success_rate": archive_transfer_payload_success_rate,
                     "archive_evicted": archive_evicted,
                     "archive_eviction_reason": archive_eviction_reason,
                     "archive_eviction_count": archive_eviction_count,
@@ -1526,6 +1562,11 @@ class GenerationRunner:
             [artifact for artifacts in agent_artifacts.values() for artifact in artifacts],
             key=lambda artifact: artifact.created_at,
         )
+        self._annotate_transfer_payload_use(
+            lineage_updates=lineage_updates,
+            selection=selection,
+            all_events=all_events,
+        )
         inheritance_effect = self._build_inheritance_effect(lineage_updates=lineage_updates, selection=selection)
         drift = compute_drift_metrics(
             all_artifacts,
@@ -1603,6 +1644,16 @@ class GenerationRunner:
                 if source_bundle_signature is None
                 else parent_context.get("bundle_state_by_role", {}).get(role, {}).get(source_bundle_signature, {})
             )
+            parent_artifacts = (
+                []
+                if parent_agent is None
+                else parent_context["artifacts_by_agent"].get(parent_agent.agent_id, [])
+            )
+            parent_memorials = (
+                []
+                if parent_agent is None
+                else parent_context["memorials_by_agent"].get(parent_agent.agent_id, [])
+            )
             if parent_agent is None:
                 variant = root_variant(role, role_ordinal)
                 package_policy_id = variant.default_package_policy
@@ -1668,17 +1719,24 @@ class GenerationRunner:
                 )
             current_bundle_signature = f"{role}:{variant.variant_id}:{package_policy_id}"
             used_bundle_signatures_by_role[role].add(current_bundle_signature)
+            transfer_payload = build_archive_transfer_payload(
+                role=role,
+                world_name=self.config.world.name,
+                policy_id=package_policy_id,
+                source_bundle_signature=source_bundle_signature,
+                source_bundle_state=source_bundle_state,
+                artifacts=parent_artifacts,
+                memorials=parent_memorials,
+                taboo_tags=inherited_taboo_tags,
+            )
             inherited = assemble_inheritance_package(
-                artifacts=[]
-                if parent_agent is None
-                else parent_context["artifacts_by_agent"].get(parent_agent.agent_id, []),
-                memorials=[]
-                if parent_agent is None
-                else parent_context["memorials_by_agent"].get(parent_agent.agent_id, []),
+                artifacts=parent_artifacts,
+                memorials=parent_memorials,
                 artifact_limit=self.config.inheritance.artifact_summaries_per_agent,
                 memorial_limit=self.config.inheritance.memorials_per_agent,
                 policy_id=package_policy_id,
                 extra_taboo_tags=inherited_taboo_tags,
+                transfer_payload=transfer_payload,
             )
             prompt_bundle = materialize_prompt_bundle(
                 base_prompt=prompts[role],
@@ -1745,6 +1803,13 @@ class GenerationRunner:
                     "inheritance_source_archive_retirement_reason": source_bundle_state.get(
                         "archive_retirement_reason"
                     ),
+                    "transfer_payload_active": bool(inherited.transfer_guidance),
+                    "transfer_payload_source_bundle_signature": inherited.transfer_source_bundle_signature,
+                    "transfer_payload_context": inherited.transfer_context,
+                    "transfer_payload_guidance": list(inherited.transfer_guidance),
+                    "transfer_payload_failure_avoidance": list(inherited.transfer_failure_avoidance),
+                    "transfer_payload_expected_lift": round(float(inherited.transfer_expected_lift), 4),
+                    "transfer_payload_source_success_rate": round(float(inherited.transfer_success_rate), 4),
                     "lineage_taboo_tags": parent_taboo_tags,
                     "registry_taboo_tags": registry_taboo_tags,
                     "inherited_artifact_ids": inherited.artifact_ids,
@@ -1815,6 +1880,38 @@ class GenerationRunner:
                 failures = set(decision.hidden_failures) | set(decision.public_failures)
             records.append((labels, failures))
         return summarize_warning_effect(records)
+
+    def _annotate_transfer_payload_use(
+        self,
+        *,
+        lineage_updates: list[dict[str, Any]],
+        selection: list[Any],
+        all_events: list[EventRecord],
+    ) -> None:
+        selection_by_agent = {decision.agent_id: decision for decision in selection}
+        for update in lineage_updates:
+            relevant_events = self._relevant_events_for_agent(update["agent_id"], all_events)
+            payload_turns = [
+                event
+                for event in relevant_events
+                if event.event_type == "agent_turn" and event.event_payload.get("transfer_payload_used", False)
+            ]
+            payload_modes = sorted(
+                {
+                    str(event.event_payload.get("transfer_payload_mode"))
+                    for event in payload_turns
+                    if event.event_payload.get("transfer_payload_mode")
+                }
+            )
+            decision = selection_by_agent.get(update["agent_id"])
+            update["transfer_payload_used"] = bool(payload_turns)
+            update["transfer_payload_used_steps"] = len(payload_turns)
+            update["transfer_payload_modes"] = payload_modes
+            update["transfer_payload_evidence_refs"] = [event.event_id for event in payload_turns]
+            if decision is not None:
+                update["public_score"] = round(float(decision.public_score), 4)
+                update["quarantine_status"] = decision.quarantine_status
+                update["eligible"] = bool(decision.eligible)
 
     def _build_summary(
         self,
@@ -2077,6 +2174,8 @@ class GenerationRunner:
                 "archive_retirement_credit": state["archive_retirement_credit"],
                 "archive_transfer_success_rate": state["archive_transfer_success_rate"],
                 "archive_transfer_lift_retention": state["archive_transfer_lift_retention"],
+                "archive_transfer_payload_used_rate": state["archive_transfer_payload_used_rate"],
+                "archive_transfer_payload_success_rate": state["archive_transfer_payload_success_rate"],
                 "avg_public_score": state["avg_public_score"],
             }
             for role, role_states in bundle_state_by_role.items()
@@ -2170,6 +2269,11 @@ class GenerationRunner:
                 "archive_transfer_failure_count": state["archive_transfer_failure_count"],
                 "archive_transfer_success_streak": state["archive_transfer_success_streak"],
                 "archive_transfer_failure_streak": state["archive_transfer_failure_streak"],
+                "archive_transfer_payload_available_count": state["archive_transfer_payload_available_count"],
+                "archive_transfer_payload_used_count": state["archive_transfer_payload_used_count"],
+                "archive_transfer_payload_used_rate": state["archive_transfer_payload_used_rate"],
+                "archive_transfer_payload_success_count": state["archive_transfer_payload_success_count"],
+                "archive_transfer_payload_success_rate": state["archive_transfer_payload_success_rate"],
             }
             for role, role_states in bundle_state_by_role.items()
             for bundle_signature, state in role_states.items()
@@ -2184,6 +2288,22 @@ class GenerationRunner:
             item
             for item in archive_transfer_bundles
             if item["archive_transfer_success_rate"] == 0.0
+        ]
+        archive_transfer_payload_usage_values = [
+            float(item["archive_transfer_payload_used_rate"])
+            for item in archive_transfer_bundles
+            if item["archive_transfer_payload_available_count"] > 0
+        ]
+        archive_transfer_payload_success_bundles = [
+            item
+            for item in archive_transfer_bundles
+            if item["archive_transfer_payload_success_rate"] > 0.0
+        ]
+        archive_transfer_payload_failure_bundles = [
+            item
+            for item in archive_transfer_bundles
+            if item["archive_transfer_payload_available_count"] > 0
+            and item["archive_transfer_payload_success_rate"] == 0.0
         ]
         previous_proving_bundle_signatures = {
             (item["role"], item["bundle_signature"])
@@ -2350,6 +2470,12 @@ class GenerationRunner:
             "bundle_archive_value_deficit_roles": parent_pool_summary["bundle_archive_value_deficit_roles"],
             "bundle_archive_transfer_success_roles": parent_pool_summary["bundle_archive_transfer_success_roles"],
             "bundle_archive_transfer_failure_roles": parent_pool_summary["bundle_archive_transfer_failure_roles"],
+            "bundle_archive_transfer_payload_success_roles": sorted(
+                {item["role"] for item in archive_transfer_payload_success_bundles}
+            ),
+            "bundle_archive_transfer_payload_failure_roles": sorted(
+                {item["role"] for item in archive_transfer_payload_failure_bundles}
+            ),
             "bundle_archive_eviction_roles": parent_pool_summary["bundle_archive_eviction_roles"],
             "bundle_archive_repeat_eviction_roles": parent_pool_summary["bundle_archive_repeat_eviction_roles"],
             "bundle_archive_retired_roles": parent_pool_summary["bundle_archive_retired_roles"],
@@ -2425,6 +2551,32 @@ class GenerationRunner:
             "archive_parent_vs_child_lift_retention": (
                 round(statistics.fmean(archive_transfer_retention_values), 4)
                 if archive_transfer_retention_values
+                else 0.0
+            ),
+            "archive_transfer_payload_available_count": sum(
+                item["archive_transfer_payload_available_count"] for item in archive_transfer_bundles
+            ),
+            "archive_transfer_payload_used_count": sum(
+                item["archive_transfer_payload_used_count"] for item in archive_transfer_bundles
+            ),
+            "archive_transfer_payload_used_rate": (
+                round(statistics.fmean(archive_transfer_payload_usage_values), 4)
+                if archive_transfer_payload_usage_values
+                else 0.0
+            ),
+            "archive_transfer_payload_success_count": sum(
+                item["archive_transfer_payload_success_count"] for item in archive_transfer_bundles
+            ),
+            "archive_transfer_payload_success_rate": (
+                round(
+                    sum(item["archive_transfer_payload_success_count"] for item in archive_transfer_bundles)
+                    / max(
+                        sum(item["archive_transfer_payload_used_count"] for item in archive_transfer_bundles),
+                        1,
+                    ),
+                    4,
+                )
+                if sum(item["archive_transfer_payload_used_count"] for item in archive_transfer_bundles) > 0
                 else 0.0
             ),
             "archive_admitted_bundles": archive_admitted_bundles,
@@ -2557,6 +2709,8 @@ class GenerationRunner:
                 f"- bundle_archive_value_deficit_roles: {', '.join(summary['selection_summary'].get('bundle_archive_value_deficit_roles', [])) or 'none'}",
                 f"- bundle_archive_transfer_success_roles: {', '.join(summary['selection_summary'].get('bundle_archive_transfer_success_roles', [])) or 'none'}",
                 f"- bundle_archive_transfer_failure_roles: {', '.join(summary['selection_summary'].get('bundle_archive_transfer_failure_roles', [])) or 'none'}",
+                f"- bundle_archive_transfer_payload_success_roles: {', '.join(summary['selection_summary'].get('bundle_archive_transfer_payload_success_roles', [])) or 'none'}",
+                f"- bundle_archive_transfer_payload_failure_roles: {', '.join(summary['selection_summary'].get('bundle_archive_transfer_payload_failure_roles', [])) or 'none'}",
                 f"- bundle_archive_eviction_roles: {', '.join(summary['selection_summary'].get('bundle_archive_eviction_roles', [])) or 'none'}",
                 f"- bundle_archive_repeat_eviction_roles: {', '.join(summary['selection_summary'].get('bundle_archive_repeat_eviction_roles', [])) or 'none'}",
                 f"- bundle_archive_retired_roles: {', '.join(summary['selection_summary'].get('bundle_archive_retired_roles', [])) or 'none'}",
@@ -2583,6 +2737,11 @@ class GenerationRunner:
                 f"- archive_transfer_failure_count: {summary['selection_summary'].get('archive_transfer_failure_count', 0)}",
                 f"- archive_transfer_success_rate: {summary['selection_summary'].get('archive_transfer_success_rate', 0.0)}",
                 f"- archive_parent_vs_child_lift_retention: {summary['selection_summary'].get('archive_parent_vs_child_lift_retention', 0.0)}",
+                f"- archive_transfer_payload_available_count: {summary['selection_summary'].get('archive_transfer_payload_available_count', 0)}",
+                f"- archive_transfer_payload_used_count: {summary['selection_summary'].get('archive_transfer_payload_used_count', 0)}",
+                f"- archive_transfer_payload_used_rate: {summary['selection_summary'].get('archive_transfer_payload_used_rate', 0.0)}",
+                f"- archive_transfer_payload_success_count: {summary['selection_summary'].get('archive_transfer_payload_success_count', 0)}",
+                f"- archive_transfer_payload_success_rate: {summary['selection_summary'].get('archive_transfer_payload_success_rate', 0.0)}",
                 f"- archive_admitted_count: {summary['selection_summary'].get('archive_admitted_count', 0)}",
                 f"- newly_admitted_count: {summary['selection_summary'].get('newly_admitted_count', 0)}",
                 f"- post_admission_grace_count: {summary['selection_summary'].get('post_admission_grace_count', 0)}",
@@ -2624,6 +2783,8 @@ class GenerationRunner:
                 f"- {update['lineage_id']} ({update['role']}): parents={', '.join(update['parent_lineage_ids']) or 'root'} "
                 f"inherited_artifacts={len(update['inherited_artifact_ids'])} "
                 f"inherited_memorials={len(update['inherited_memorial_ids'])} "
+                f"transfer_payload_active={update.get('transfer_payload_active', False)} "
+                f"transfer_payload_used={update.get('transfer_payload_used', False)} "
                 f"variant={update['prompt_variant_id']} policy={update['package_policy_id']} origin={update['variant_origin']}"
             )
         lines.extend(["", "## Prompt Variation", ""])
@@ -2667,6 +2828,10 @@ class GenerationRunner:
             lines.append(f"- archive_transfer_success_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_transfer_failure_roles", []):
             lines.append(f"- archive_transfer_failure_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_transfer_payload_success_roles", []):
+            lines.append(f"- archive_transfer_payload_success_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_transfer_payload_failure_roles", []):
+            lines.append(f"- archive_transfer_payload_failure_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_eviction_roles", []):
             lines.append(f"- archive_eviction_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_repeat_eviction_roles", []):
@@ -2745,7 +2910,11 @@ class GenerationRunner:
                 f"success_rate={item.get('archive_transfer_success_rate', 0.0)} "
                 f"observed={item.get('archive_transfer_observed_count', 0)} "
                 f"successes={item.get('archive_transfer_success_count', 0)} "
-                f"failures={item.get('archive_transfer_failure_count', 0)}"
+                f"failures={item.get('archive_transfer_failure_count', 0)} "
+                f"payload_available={item.get('archive_transfer_payload_available_count', 0)} "
+                f"payload_used={item.get('archive_transfer_payload_used_count', 0)} "
+                f"payload_used_rate={item.get('archive_transfer_payload_used_rate', 0.0)} "
+                f"payload_success_rate={item.get('archive_transfer_payload_success_rate', 0.0)}"
             )
         for item in summary["selection_summary"].get("archive_evicted_bundles", []):
             lines.append(

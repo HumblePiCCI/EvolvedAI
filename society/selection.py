@@ -300,6 +300,14 @@ def _bundle_archive_transfer_lift_retention(state: Mapping[str, Any]) -> float:
     return float(state.get("archive_transfer_lift_retention", 0.0))
 
 
+def _bundle_archive_transfer_payload_success_rate(state: Mapping[str, Any]) -> float:
+    return float(state.get("archive_transfer_payload_success_rate", 0.0))
+
+
+def _bundle_archive_transfer_payload_used_rate(state: Mapping[str, Any]) -> float:
+    return float(state.get("archive_transfer_payload_used_rate", 0.0))
+
+
 def _bundle_archive_transfer_deficit(state: Mapping[str, Any]) -> bool:
     return bool(
         bool(state.get("archive_transfer_required", False))
@@ -474,6 +482,8 @@ def _bundle_retention_key(
         int(state.get("archive_decay_generations", 0)),
         _bundle_decay_debt(state),
         -int(state.get("clean_win_generations", 0)),
+        -_bundle_archive_transfer_payload_success_rate(state),
+        -_bundle_archive_transfer_payload_used_rate(state),
         -int(state.get("archive_transfer_success_streak", 0)),
         -int(state.get("archive_positive_lift_streak", 0)),
         -_bundle_archive_transfer_success_rate(state),
@@ -587,6 +597,8 @@ def _bundle_balanced_selection(
                 _bundle_state(candidate[0], bundle_state_by_signature).get("archive_decay_generations", 0),
                 _bundle_decay_debt(_bundle_state(candidate[0], bundle_state_by_signature)),
                 len(by_bundle[candidate[0]]),
+                -_bundle_archive_transfer_payload_success_rate(_bundle_state(candidate[0], bundle_state_by_signature)),
+                -_bundle_archive_transfer_payload_used_rate(_bundle_state(candidate[0], bundle_state_by_signature)),
                 -int(_bundle_state(candidate[0], bundle_state_by_signature).get("archive_transfer_success_streak", 0)),
                 -int(_bundle_state(candidate[0], bundle_state_by_signature).get("archive_positive_lift_streak", 0)),
                 -_bundle_archive_transfer_success_rate(_bundle_state(candidate[0], bundle_state_by_signature)),
@@ -630,6 +642,8 @@ def _bundle_balanced_selection(
                         int(state.get("archive_decay_generations", 0)),
                         _bundle_decay_debt(state),
                         0,
+                        -_bundle_archive_transfer_payload_success_rate(state),
+                        -_bundle_archive_transfer_payload_used_rate(state),
                         -int(state.get("archive_transfer_success_streak", 0)),
                         -int(state.get("archive_positive_lift_streak", 0)),
                         -_bundle_archive_transfer_success_rate(state),
@@ -662,6 +676,8 @@ def _bundle_balanced_selection(
                             int(state.get("archive_decay_generations", 0)),
                             _bundle_decay_debt(state),
                             0,
+                            -_bundle_archive_transfer_payload_success_rate(state),
+                            -_bundle_archive_transfer_payload_used_rate(state),
                             -int(state.get("archive_transfer_success_streak", 0)),
                             -int(state.get("archive_positive_lift_streak", 0)),
                             -_bundle_archive_transfer_success_rate(state),

@@ -167,6 +167,17 @@ def lineage_entries(
             "inheritance_source_bundle_preserved": lineage_update.get("inheritance_source_bundle_preserved", False),
             "inheritance_source_bundle_reason": lineage_update.get("inheritance_source_bundle_reason"),
             "inheritance_source_selection_source": lineage_update.get("inheritance_source_selection_source"),
+            "transfer_payload_active": lineage_update.get("transfer_payload_active", False),
+            "transfer_payload_source_bundle_signature": lineage_update.get("transfer_payload_source_bundle_signature"),
+            "transfer_payload_context": lineage_update.get("transfer_payload_context"),
+            "transfer_payload_guidance": lineage_update.get("transfer_payload_guidance", []),
+            "transfer_payload_failure_avoidance": lineage_update.get("transfer_payload_failure_avoidance", []),
+            "transfer_payload_expected_lift": lineage_update.get("transfer_payload_expected_lift", 0.0),
+            "transfer_payload_source_success_rate": lineage_update.get("transfer_payload_source_success_rate", 0.0),
+            "transfer_payload_used": lineage_update.get("transfer_payload_used", False),
+            "transfer_payload_used_steps": lineage_update.get("transfer_payload_used_steps", 0),
+            "transfer_payload_modes": lineage_update.get("transfer_payload_modes", []),
+            "transfer_payload_evidence_refs": lineage_update.get("transfer_payload_evidence_refs", []),
             "inherited_artifact_ids": inherited_artifact_ids,
             "inherited_memorial_ids": inherited_memorial_ids,
             "inherited_artifacts": inherited_artifacts,
@@ -273,11 +284,27 @@ def render_lineage_report(report: dict[str, Any]) -> str:
             f"parent_source={entry['inheritance_source_selection_source'] or 'none'}"
         )
         lines.append(
+            f"  transfer_payload_active={entry['transfer_payload_active']} "
+            f"transfer_payload_used={entry['transfer_payload_used']} "
+            f"transfer_payload_used_steps={entry['transfer_payload_used_steps']} "
+            f"transfer_payload_source={entry['transfer_payload_source_bundle_signature'] or 'none'} "
+            f"transfer_payload_modes={','.join(entry['transfer_payload_modes']) or 'none'}"
+        )
+        lines.append(
             f"  base_score={entry['base_score']} diversity_bonus={entry['diversity_bonus']} "
             f"cohort_similarity={entry['cohort_similarity']} "
             f"bundle_preserved={entry['bundle_preserved']} "
             f"bundle_reason={entry['bundle_preservation_reason'] or 'none'}"
         )
+        if entry["transfer_payload_guidance"]:
+            lines.append(
+                "  transfer_payload_guidance=" + " | ".join(entry["transfer_payload_guidance"])
+            )
+        if entry["transfer_payload_failure_avoidance"]:
+            lines.append(
+                "  transfer_payload_failure_avoidance="
+                + ",".join(entry["transfer_payload_failure_avoidance"])
+            )
         for artifact in entry["inherited_artifacts"]:
             lines.append(
                 f"  artifact {artifact['artifact_id']} [{artifact['artifact_type']}]: {artifact['summary']}"
@@ -493,6 +520,14 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     "bundle_archive_transfer_failure_roles",
                     [],
                 ),
+                "bundle_archive_transfer_payload_success_roles": selection_summary.get(
+                    "bundle_archive_transfer_payload_success_roles",
+                    [],
+                ),
+                "bundle_archive_transfer_payload_failure_roles": selection_summary.get(
+                    "bundle_archive_transfer_payload_failure_roles",
+                    [],
+                ),
                 "bundle_archive_eviction_roles": selection_summary.get(
                     "bundle_archive_eviction_roles",
                     [],
@@ -563,6 +598,26 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 "archive_transfer_success_rate": selection_summary.get("archive_transfer_success_rate", 0.0),
                 "archive_parent_vs_child_lift_retention": selection_summary.get(
                     "archive_parent_vs_child_lift_retention",
+                    0.0,
+                ),
+                "archive_transfer_payload_available_count": selection_summary.get(
+                    "archive_transfer_payload_available_count",
+                    0,
+                ),
+                "archive_transfer_payload_used_count": selection_summary.get(
+                    "archive_transfer_payload_used_count",
+                    0,
+                ),
+                "archive_transfer_payload_used_rate": selection_summary.get(
+                    "archive_transfer_payload_used_rate",
+                    0.0,
+                ),
+                "archive_transfer_payload_success_count": selection_summary.get(
+                    "archive_transfer_payload_success_count",
+                    0,
+                ),
+                "archive_transfer_payload_success_rate": selection_summary.get(
+                    "archive_transfer_payload_success_rate",
                     0.0,
                 ),
                 "archive_admitted_count": selection_summary.get("archive_admitted_count", 0),
@@ -1042,6 +1097,11 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"archive_transfer_failure_count={metric['archive_transfer_failure_count']} "
             f"archive_transfer_success_rate={metric['archive_transfer_success_rate']} "
             f"archive_parent_vs_child_lift_retention={metric['archive_parent_vs_child_lift_retention']} "
+            f"archive_transfer_payload_available_count={metric['archive_transfer_payload_available_count']} "
+            f"archive_transfer_payload_used_count={metric['archive_transfer_payload_used_count']} "
+            f"archive_transfer_payload_used_rate={metric['archive_transfer_payload_used_rate']} "
+            f"archive_transfer_payload_success_count={metric['archive_transfer_payload_success_count']} "
+            f"archive_transfer_payload_success_rate={metric['archive_transfer_payload_success_rate']} "
             f"archive_admitted_count={metric['archive_admitted_count']} "
             f"newly_admitted_count={metric['newly_admitted_count']} "
             f"post_admission_grace_count={metric['post_admission_grace_count']} "
@@ -1136,6 +1196,16 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             lines.append(
                 "  bundle_archive_transfer_failure_roles="
                 + ",".join(metric["bundle_archive_transfer_failure_roles"])
+            )
+        if metric["bundle_archive_transfer_payload_success_roles"]:
+            lines.append(
+                "  bundle_archive_transfer_payload_success_roles="
+                + ",".join(metric["bundle_archive_transfer_payload_success_roles"])
+            )
+        if metric["bundle_archive_transfer_payload_failure_roles"]:
+            lines.append(
+                "  bundle_archive_transfer_payload_failure_roles="
+                + ",".join(metric["bundle_archive_transfer_payload_failure_roles"])
             )
         if metric["bundle_archive_eviction_roles"]:
             lines.append(

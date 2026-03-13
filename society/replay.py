@@ -119,11 +119,19 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f"source_selection={item.get('inheritance_source_selection_source') or 'none'} "
                 f"inherited_artifacts={len(item['inherited_artifact_ids'])} "
                 f"inherited_memorials={len(item['inherited_memorial_ids'])} "
+                f"transfer_payload_active={item.get('transfer_payload_active', False)} "
+                f"transfer_payload_used={item.get('transfer_payload_used', False)} "
+                f"transfer_payload_used_steps={item.get('transfer_payload_used_steps', 0)} "
                 f"taboo_tags={','.join(item['taboo_tags']) or 'none'} "
                 f"variant={item.get('prompt_variant_id', 'none')} "
                 f"policy={item.get('package_policy_id', 'none')} "
                 f"origin={item.get('variant_origin', 'none')}"
             )
+            if item.get("transfer_payload_guidance"):
+                lines.append(
+                    "    transfer_payload_guidance="
+                    + " | ".join(item.get("transfer_payload_guidance", []))
+                )
         lines.append("")
 
     role_variant_count = summary.get("selection_summary", {}).get("role_variant_count", {})
@@ -171,6 +179,10 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
             lines.append(f"  archive_transfer_success_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_transfer_failure_roles", []):
             lines.append(f"  archive_transfer_failure_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_transfer_payload_success_roles", []):
+            lines.append(f"  archive_transfer_payload_success_role:{role}")
+        for role in summary.get("selection_summary", {}).get("bundle_archive_transfer_payload_failure_roles", []):
+            lines.append(f"  archive_transfer_payload_failure_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_eviction_roles", []):
             lines.append(f"  archive_eviction_role:{role}")
         for role in summary.get("selection_summary", {}).get("bundle_archive_repeat_eviction_roles", []):
@@ -237,6 +249,26 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
         lines.append(
             "  archive_parent_vs_child_lift_retention:"
             f"{summary.get('selection_summary', {}).get('archive_parent_vs_child_lift_retention', 0.0)}"
+        )
+        lines.append(
+            "  archive_transfer_payload_available_count:"
+            f"{summary.get('selection_summary', {}).get('archive_transfer_payload_available_count', 0)}"
+        )
+        lines.append(
+            "  archive_transfer_payload_used_count:"
+            f"{summary.get('selection_summary', {}).get('archive_transfer_payload_used_count', 0)}"
+        )
+        lines.append(
+            "  archive_transfer_payload_used_rate:"
+            f"{summary.get('selection_summary', {}).get('archive_transfer_payload_used_rate', 0.0)}"
+        )
+        lines.append(
+            "  archive_transfer_payload_success_count:"
+            f"{summary.get('selection_summary', {}).get('archive_transfer_payload_success_count', 0)}"
+        )
+        lines.append(
+            "  archive_transfer_payload_success_rate:"
+            f"{summary.get('selection_summary', {}).get('archive_transfer_payload_success_rate', 0.0)}"
         )
         lines.append(
             f"  archive_admitted_count:{summary.get('selection_summary', {}).get('archive_admitted_count', 0)}"
@@ -401,6 +433,10 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
                 f" retention={item.get('archive_transfer_lift_retention', 0.0)}"
                 f" success_rate={item.get('archive_transfer_success_rate', 0.0)}"
                 f" observed={item.get('archive_transfer_observed_count', 0)}"
+                f" payload_available={item.get('archive_transfer_payload_available_count', 0)}"
+                f" payload_used={item.get('archive_transfer_payload_used_count', 0)}"
+                f" payload_used_rate={item.get('archive_transfer_payload_used_rate', 0.0)}"
+                f" payload_success_rate={item.get('archive_transfer_payload_success_rate', 0.0)}"
             )
         for item in summary.get("selection_summary", {}).get("archive_evicted_bundles", []):
             lines.append(

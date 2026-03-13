@@ -133,6 +133,12 @@ class InheritancePackage(StrictModel):
     artifact_summaries: list[str] = Field(default_factory=list)
     memorial_lessons: list[str] = Field(default_factory=list)
     taboo_tags: list[str] = Field(default_factory=list)
+    transfer_source_bundle_signature: str | None = None
+    transfer_context: str | None = None
+    transfer_guidance: list[str] = Field(default_factory=list)
+    transfer_failure_avoidance: list[str] = Field(default_factory=list)
+    transfer_expected_lift: float = 0.0
+    transfer_success_rate: float = 0.0
 
 
 class SelectionDecision(StrictModel):

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Any
 
-from society.constants import QUARANTINE_CLEAN, STICKY_TABOO_TAGS
+from society.constants import BUNDLE_ARCHIVE_COMPARATIVE_LIFT_MIN, QUARANTINE_CLEAN, STICKY_TABOO_TAGS
 from society.schemas import ArtifactRecord, InheritancePackage, MemorialRecord
 
 
@@ -44,6 +45,91 @@ def build_role_scoped_taboo_registry(
     return {role: sorted(tags) for role, tags in tags_by_role.items()}
 
 
+def build_archive_transfer_payload(
+    *,
+    role: str,
+    world_name: str,
+    policy_id: str,
+    source_bundle_signature: str | None,
+    source_bundle_state: dict[str, Any] | None,
+    artifacts: list[ArtifactRecord],
+    memorials: list[MemorialRecord],
+    taboo_tags: list[str],
+) -> dict[str, Any] | None:
+    state = source_bundle_state or {}
+    admitted = bool(state.get("archive_admitted", False))
+    retired = bool(state.get("archive_retired", False))
+    archive_history = bool(
+        admitted
+        or int(state.get("archive_candidate_generations", 0)) > 0
+        or int(state.get("archive_generations", 0)) > 0
+        or int(state.get("archive_eviction_count", 0)) > 0
+    )
+    comparative_lift = round(float(state.get("archive_comparative_lift", 0.0)), 4)
+    success_rate = round(float(state.get("archive_transfer_success_rate", 0.0)), 4)
+    value_qualified = bool(state.get("archive_value_qualified", False))
+    if retired or not archive_history:
+        return None
+    if comparative_lift < BUNDLE_ARCHIVE_COMPARATIVE_LIFT_MIN and not value_qualified and success_rate <= 0.0:
+        return None
+
+    evidence_hint = (
+        artifacts[0].summary
+        if artifacts
+        else "Advance one narrow, evidence-backed claim before broadening the inference."
+    )
+    memorial_hint = next(
+        (
+            memorial.lesson_distillate
+            for memorial in memorials
+            if memorial.classification in {"honored", "cautionary"}
+        ),
+        "Keep uncertainty explicit and answer open corrections before compressing the notebook into a stronger claim.",
+    )
+    failure_avoidance = sorted(
+        {
+            *taboo_tags,
+            *{
+                memorial.failure_mode
+                for memorial in memorials
+                if memorial.failure_mode is not None
+            },
+        }
+    )
+    guidance = [
+        "Carry forward one evidence-backed claim before widening the notebook summary.",
+        "State uncertainty explicitly and keep evidence separate from inference.",
+        "Resolve targeted corrections before adding a broader synthesis layer.",
+    ]
+    if policy_id == "artifact_first":
+        guidance[0] = "Lead with one cited artifact-backed claim, then add only the narrowest supported inference."
+    elif policy_id == "memorial_first":
+        guidance[1] = "Use the memorial lesson to keep uncertainty explicit before adding any new claim."
+    elif policy_id == "taboo_first":
+        guidance[2] = "Name the risky failure mode first, then narrow the claim instead of defending it."
+    if role == "archivist":
+        guidance[0] = "Separate evidence, inference, and speculation before writing the closing summary."
+    elif role == "steward":
+        guidance[2] = "Collapse duplicate notes and answer open corrections before introducing a new plan."
+    elif role == "judge":
+        guidance[0] = "Ask for the narrowest clarification that preserves the evidence trail."
+
+    return {
+        "source_bundle_signature": source_bundle_signature,
+        "context": (
+            f"{role} in {world_name} using {policy_id} package ordering; source bundle "
+            f"{source_bundle_signature or 'unknown'} improved over the incumbent baseline"
+            f"{' and already held archive standing' if admitted else ' while still in archive candidacy'}."
+        ),
+        "guidance": guidance,
+        "failure_avoidance": failure_avoidance,
+        "expected_lift": comparative_lift,
+        "success_rate": success_rate,
+        "evidence_hint": evidence_hint,
+        "memorial_hint": memorial_hint,
+    }
+
+
 def assemble_inheritance_package(
     *,
     artifacts: list[ArtifactRecord],
@@ -52,6 +138,7 @@ def assemble_inheritance_package(
     memorial_limit: int,
     policy_id: str = "balanced",
     extra_taboo_tags: list[str] | None = None,
+    transfer_payload: dict[str, Any] | None = None,
 ) -> InheritancePackage:
     clean_artifacts = [artifact for artifact in artifacts if artifact.quarantine_status == QUARANTINE_CLEAN]
     clean_memorials = [memorial for memorial in memorials if memorial.classification != "quarantined"]
@@ -107,4 +194,10 @@ def assemble_inheritance_package(
         artifact_summaries=[artifact.summary for artifact in chosen_artifacts],
         memorial_lessons=[memorial.lesson_distillate for memorial in chosen_memorials],
         taboo_tags=taboo_tags,
+        transfer_source_bundle_signature=None if transfer_payload is None else transfer_payload.get("source_bundle_signature"),
+        transfer_context=None if transfer_payload is None else transfer_payload.get("context"),
+        transfer_guidance=[] if transfer_payload is None else list(transfer_payload.get("guidance", [])),
+        transfer_failure_avoidance=[] if transfer_payload is None else list(transfer_payload.get("failure_avoidance", [])),
+        transfer_expected_lift=0.0 if transfer_payload is None else float(transfer_payload.get("expected_lift", 0.0)),
+        transfer_success_rate=0.0 if transfer_payload is None else float(transfer_payload.get("success_rate", 0.0)),
     )
