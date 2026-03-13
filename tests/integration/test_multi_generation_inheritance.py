@@ -124,6 +124,9 @@ def test_spawn_population_carries_archive_source_benchmark_fields(minimal_config
         assert any(update["transfer_payload_active"] for update in carried)
         assert any(update["transfer_payload_source_bundle_signature"] for update in carried)
         assert any(update["transfer_payload_guidance"] for update in carried)
+        assert any(update["transfer_payload_trigger_conditions"] for update in carried)
+        assert any(update["transfer_payload_backoff_conditions"] for update in carried)
+        assert any("thin_citation_support" in update["transfer_payload_trigger_conditions"] for update in carried)
         assert any(update["transfer_payload_expected_lift"] == 0.03 for update in carried)
     finally:
         storage.close()

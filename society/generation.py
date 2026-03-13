@@ -772,6 +772,9 @@ class GenerationRunner:
                     "transfer_payload_active": bool(update.get("transfer_payload_active", False)),
                     "transfer_payload_used": bool(update.get("transfer_payload_used", False)),
                     "transfer_payload_used_steps": int(update.get("transfer_payload_used_steps", 0)),
+                    "transfer_payload_trigger_matched": bool(update.get("transfer_payload_trigger_matched", False)),
+                    "transfer_payload_backoff_active": bool(update.get("transfer_payload_backoff_active", False)),
+                    "transfer_payload_misapplied": bool(update.get("transfer_payload_misapplied", False)),
                     "source_archive_admitted": bool(update.get("inheritance_source_archive_admitted", False)),
                     "source_archive_value_qualified": bool(
                         update.get("inheritance_source_archive_value_qualified", False)
@@ -906,11 +909,42 @@ class GenerationRunner:
                 ] if role_incumbent_benchmark > 0 else []
                 transfer_payload_updates = [item for item in transfer_updates if item["transfer_payload_active"]]
                 transfer_payload_used_updates = [item for item in transfer_payload_updates if item["transfer_payload_used"]]
+                transfer_payload_matched_updates = [
+                    item for item in transfer_payload_updates if item["transfer_payload_trigger_matched"]
+                ]
+                transfer_payload_mismatched_updates = [
+                    item for item in transfer_payload_updates if not item["transfer_payload_trigger_matched"]
+                ]
+                transfer_payload_backoff_updates = [
+                    item for item in transfer_payload_updates if item["transfer_payload_backoff_active"]
+                ]
+                transfer_payload_misapplied_updates = [
+                    item for item in transfer_payload_updates if item["transfer_payload_misapplied"]
+                ]
                 archive_transfer_payload_available_count = len(transfer_payload_updates)
                 archive_transfer_payload_used_count = len(transfer_payload_used_updates)
                 archive_transfer_payload_used_rate = (
                     round(archive_transfer_payload_used_count / archive_transfer_payload_available_count, 4)
                     if archive_transfer_payload_available_count
+                    else 0.0
+                )
+                archive_transfer_payload_trigger_match_count = len(transfer_payload_matched_updates)
+                archive_transfer_payload_trigger_match_rate = (
+                    round(
+                        archive_transfer_payload_trigger_match_count / archive_transfer_payload_available_count,
+                        4,
+                    )
+                    if archive_transfer_payload_available_count
+                    else 0.0
+                )
+                archive_transfer_payload_backoff_count = len(transfer_payload_backoff_updates)
+                archive_transfer_payload_misapplied_count = len(transfer_payload_misapplied_updates)
+                archive_transfer_payload_misapplied_rate = (
+                    round(
+                        archive_transfer_payload_misapplied_count / archive_transfer_payload_used_count,
+                        4,
+                    )
+                    if archive_transfer_payload_used_count
                     else 0.0
                 )
                 archive_transfer_payload_success_count = sum(
@@ -927,6 +961,20 @@ class GenerationRunner:
                     round(archive_transfer_payload_success_count / archive_transfer_payload_used_count, 4)
                     if archive_transfer_payload_used_count
                     else 0.0
+                )
+                matched_child_lifts = [
+                    round(float(item["public_score"]) - role_incumbent_benchmark, 4)
+                    for item in transfer_payload_matched_updates
+                ] if role_incumbent_benchmark > 0 else []
+                mismatched_child_lifts = [
+                    round(float(item["public_score"]) - role_incumbent_benchmark, 4)
+                    for item in transfer_payload_mismatched_updates
+                ] if role_incumbent_benchmark > 0 else []
+                archive_transfer_payload_matched_child_mean_lift = (
+                    round(statistics.fmean(matched_child_lifts), 4) if matched_child_lifts else 0.0
+                )
+                archive_transfer_payload_mismatched_child_mean_lift = (
+                    round(statistics.fmean(mismatched_child_lifts), 4) if mismatched_child_lifts else 0.0
                 )
                 archive_transfer_child_mean_lift = (
                     round(statistics.fmean(archive_transfer_child_lifts), 4)
@@ -1251,8 +1299,15 @@ class GenerationRunner:
                     "archive_transfer_payload_available_count": archive_transfer_payload_available_count,
                     "archive_transfer_payload_used_count": archive_transfer_payload_used_count,
                     "archive_transfer_payload_used_rate": archive_transfer_payload_used_rate,
+                    "archive_transfer_payload_trigger_match_count": archive_transfer_payload_trigger_match_count,
+                    "archive_transfer_payload_trigger_match_rate": archive_transfer_payload_trigger_match_rate,
+                    "archive_transfer_payload_backoff_count": archive_transfer_payload_backoff_count,
+                    "archive_transfer_payload_misapplied_count": archive_transfer_payload_misapplied_count,
+                    "archive_transfer_payload_misapplied_rate": archive_transfer_payload_misapplied_rate,
                     "archive_transfer_payload_success_count": archive_transfer_payload_success_count,
                     "archive_transfer_payload_success_rate": archive_transfer_payload_success_rate,
+                    "archive_transfer_payload_matched_child_mean_lift": archive_transfer_payload_matched_child_mean_lift,
+                    "archive_transfer_payload_mismatched_child_mean_lift": archive_transfer_payload_mismatched_child_mean_lift,
                     "archive_evicted": archive_evicted,
                     "archive_eviction_reason": archive_eviction_reason,
                     "archive_eviction_count": archive_eviction_count,
@@ -1808,6 +1863,8 @@ class GenerationRunner:
                     "transfer_payload_context": inherited.transfer_context,
                     "transfer_payload_guidance": list(inherited.transfer_guidance),
                     "transfer_payload_failure_avoidance": list(inherited.transfer_failure_avoidance),
+                    "transfer_payload_trigger_conditions": list(inherited.transfer_trigger_conditions),
+                    "transfer_payload_backoff_conditions": list(inherited.transfer_backoff_conditions),
                     "transfer_payload_expected_lift": round(float(inherited.transfer_expected_lift), 4),
                     "transfer_payload_source_success_rate": round(float(inherited.transfer_success_rate), 4),
                     "lineage_taboo_tags": parent_taboo_tags,
@@ -1896,6 +1953,21 @@ class GenerationRunner:
                 for event in relevant_events
                 if event.event_type == "agent_turn" and event.event_payload.get("transfer_payload_used", False)
             ]
+            matched_turns = [
+                event
+                for event in relevant_events
+                if event.event_type == "agent_turn" and event.event_payload.get("transfer_payload_trigger_matched", False)
+            ]
+            backoff_turns = [
+                event
+                for event in relevant_events
+                if event.event_type == "agent_turn" and event.event_payload.get("transfer_payload_backoff_active", False)
+            ]
+            misapplied_turns = [
+                event
+                for event in relevant_events
+                if event.event_type == "agent_turn" and event.event_payload.get("transfer_payload_misapplied", False)
+            ]
             payload_modes = sorted(
                 {
                     str(event.event_payload.get("transfer_payload_mode"))
@@ -1903,9 +1975,31 @@ class GenerationRunner:
                     if event.event_payload.get("transfer_payload_mode")
                 }
             )
+            trigger_reasons = sorted(
+                {
+                    str(reason)
+                    for event in matched_turns
+                    for reason in event.event_payload.get("transfer_payload_trigger_reasons", [])
+                }
+            )
+            backoff_reasons = sorted(
+                {
+                    str(reason)
+                    for event in backoff_turns
+                    for reason in event.event_payload.get("transfer_payload_backoff_reasons", [])
+                }
+            )
             decision = selection_by_agent.get(update["agent_id"])
             update["transfer_payload_used"] = bool(payload_turns)
             update["transfer_payload_used_steps"] = len(payload_turns)
+            update["transfer_payload_trigger_matched"] = bool(matched_turns)
+            update["transfer_payload_trigger_match_steps"] = len(matched_turns)
+            update["transfer_payload_backoff_active"] = bool(backoff_turns)
+            update["transfer_payload_backoff_steps"] = len(backoff_turns)
+            update["transfer_payload_misapplied"] = bool(misapplied_turns)
+            update["transfer_payload_misapplied_steps"] = len(misapplied_turns)
+            update["transfer_payload_trigger_reasons"] = trigger_reasons
+            update["transfer_payload_backoff_reasons"] = backoff_reasons
             update["transfer_payload_modes"] = payload_modes
             update["transfer_payload_evidence_refs"] = [event.event_id for event in payload_turns]
             if decision is not None:
@@ -2272,8 +2366,15 @@ class GenerationRunner:
                 "archive_transfer_payload_available_count": state["archive_transfer_payload_available_count"],
                 "archive_transfer_payload_used_count": state["archive_transfer_payload_used_count"],
                 "archive_transfer_payload_used_rate": state["archive_transfer_payload_used_rate"],
+                "archive_transfer_payload_trigger_match_count": state["archive_transfer_payload_trigger_match_count"],
+                "archive_transfer_payload_trigger_match_rate": state["archive_transfer_payload_trigger_match_rate"],
+                "archive_transfer_payload_backoff_count": state["archive_transfer_payload_backoff_count"],
+                "archive_transfer_payload_misapplied_count": state["archive_transfer_payload_misapplied_count"],
+                "archive_transfer_payload_misapplied_rate": state["archive_transfer_payload_misapplied_rate"],
                 "archive_transfer_payload_success_count": state["archive_transfer_payload_success_count"],
                 "archive_transfer_payload_success_rate": state["archive_transfer_payload_success_rate"],
+                "archive_transfer_payload_matched_child_mean_lift": state["archive_transfer_payload_matched_child_mean_lift"],
+                "archive_transfer_payload_mismatched_child_mean_lift": state["archive_transfer_payload_mismatched_child_mean_lift"],
             }
             for role, role_states in bundle_state_by_role.items()
             for bundle_signature, state in role_states.items()
@@ -2293,6 +2394,26 @@ class GenerationRunner:
             float(item["archive_transfer_payload_used_rate"])
             for item in archive_transfer_bundles
             if item["archive_transfer_payload_available_count"] > 0
+        ]
+        archive_transfer_payload_trigger_match_values = [
+            float(item["archive_transfer_payload_trigger_match_rate"])
+            for item in archive_transfer_bundles
+            if item["archive_transfer_payload_available_count"] > 0
+        ]
+        archive_transfer_payload_misapplied_values = [
+            float(item["archive_transfer_payload_misapplied_rate"])
+            for item in archive_transfer_bundles
+            if item["archive_transfer_payload_used_count"] > 0
+        ]
+        archive_transfer_payload_matched_lift_values = [
+            float(item["archive_transfer_payload_matched_child_mean_lift"])
+            for item in archive_transfer_bundles
+            if item["archive_transfer_payload_trigger_match_count"] > 0
+        ]
+        archive_transfer_payload_mismatched_lift_values = [
+            float(item["archive_transfer_payload_mismatched_child_mean_lift"])
+            for item in archive_transfer_bundles
+            if item["archive_transfer_payload_available_count"] > item["archive_transfer_payload_trigger_match_count"]
         ]
         archive_transfer_payload_success_bundles = [
             item
@@ -2476,6 +2597,12 @@ class GenerationRunner:
             "bundle_archive_transfer_payload_failure_roles": sorted(
                 {item["role"] for item in archive_transfer_payload_failure_bundles}
             ),
+            "bundle_archive_transfer_trigger_match_roles": sorted(
+                {item["role"] for item in archive_transfer_bundles if item["archive_transfer_payload_trigger_match_rate"] > 0.0}
+            ),
+            "bundle_archive_transfer_misapplied_roles": sorted(
+                {item["role"] for item in archive_transfer_bundles if item["archive_transfer_payload_misapplied_rate"] > 0.0}
+            ),
             "bundle_archive_eviction_roles": parent_pool_summary["bundle_archive_eviction_roles"],
             "bundle_archive_repeat_eviction_roles": parent_pool_summary["bundle_archive_repeat_eviction_roles"],
             "bundle_archive_retired_roles": parent_pool_summary["bundle_archive_retired_roles"],
@@ -2564,6 +2691,25 @@ class GenerationRunner:
                 if archive_transfer_payload_usage_values
                 else 0.0
             ),
+            "archive_transfer_payload_trigger_match_count": sum(
+                item["archive_transfer_payload_trigger_match_count"] for item in archive_transfer_bundles
+            ),
+            "archive_transfer_payload_trigger_match_rate": (
+                round(statistics.fmean(archive_transfer_payload_trigger_match_values), 4)
+                if archive_transfer_payload_trigger_match_values
+                else 0.0
+            ),
+            "archive_transfer_payload_backoff_count": sum(
+                item["archive_transfer_payload_backoff_count"] for item in archive_transfer_bundles
+            ),
+            "archive_transfer_payload_misapplied_count": sum(
+                item["archive_transfer_payload_misapplied_count"] for item in archive_transfer_bundles
+            ),
+            "archive_transfer_payload_misapplied_rate": (
+                round(statistics.fmean(archive_transfer_payload_misapplied_values), 4)
+                if archive_transfer_payload_misapplied_values
+                else 0.0
+            ),
             "archive_transfer_payload_success_count": sum(
                 item["archive_transfer_payload_success_count"] for item in archive_transfer_bundles
             ),
@@ -2577,6 +2723,16 @@ class GenerationRunner:
                     4,
                 )
                 if sum(item["archive_transfer_payload_used_count"] for item in archive_transfer_bundles) > 0
+                else 0.0
+            ),
+            "archive_transfer_payload_matched_lift": (
+                round(statistics.fmean(archive_transfer_payload_matched_lift_values), 4)
+                if archive_transfer_payload_matched_lift_values
+                else 0.0
+            ),
+            "archive_transfer_payload_mismatched_lift": (
+                round(statistics.fmean(archive_transfer_payload_mismatched_lift_values), 4)
+                if archive_transfer_payload_mismatched_lift_values
                 else 0.0
             ),
             "archive_admitted_bundles": archive_admitted_bundles,
@@ -2711,6 +2867,8 @@ class GenerationRunner:
                 f"- bundle_archive_transfer_failure_roles: {', '.join(summary['selection_summary'].get('bundle_archive_transfer_failure_roles', [])) or 'none'}",
                 f"- bundle_archive_transfer_payload_success_roles: {', '.join(summary['selection_summary'].get('bundle_archive_transfer_payload_success_roles', [])) or 'none'}",
                 f"- bundle_archive_transfer_payload_failure_roles: {', '.join(summary['selection_summary'].get('bundle_archive_transfer_payload_failure_roles', [])) or 'none'}",
+                f"- bundle_archive_transfer_trigger_match_roles: {', '.join(summary['selection_summary'].get('bundle_archive_transfer_trigger_match_roles', [])) or 'none'}",
+                f"- bundle_archive_transfer_misapplied_roles: {', '.join(summary['selection_summary'].get('bundle_archive_transfer_misapplied_roles', [])) or 'none'}",
                 f"- bundle_archive_eviction_roles: {', '.join(summary['selection_summary'].get('bundle_archive_eviction_roles', [])) or 'none'}",
                 f"- bundle_archive_repeat_eviction_roles: {', '.join(summary['selection_summary'].get('bundle_archive_repeat_eviction_roles', [])) or 'none'}",
                 f"- bundle_archive_retired_roles: {', '.join(summary['selection_summary'].get('bundle_archive_retired_roles', [])) or 'none'}",
@@ -2740,8 +2898,15 @@ class GenerationRunner:
                 f"- archive_transfer_payload_available_count: {summary['selection_summary'].get('archive_transfer_payload_available_count', 0)}",
                 f"- archive_transfer_payload_used_count: {summary['selection_summary'].get('archive_transfer_payload_used_count', 0)}",
                 f"- archive_transfer_payload_used_rate: {summary['selection_summary'].get('archive_transfer_payload_used_rate', 0.0)}",
+                f"- archive_transfer_payload_trigger_match_count: {summary['selection_summary'].get('archive_transfer_payload_trigger_match_count', 0)}",
+                f"- archive_transfer_payload_trigger_match_rate: {summary['selection_summary'].get('archive_transfer_payload_trigger_match_rate', 0.0)}",
+                f"- archive_transfer_payload_backoff_count: {summary['selection_summary'].get('archive_transfer_payload_backoff_count', 0)}",
+                f"- archive_transfer_payload_misapplied_count: {summary['selection_summary'].get('archive_transfer_payload_misapplied_count', 0)}",
+                f"- archive_transfer_payload_misapplied_rate: {summary['selection_summary'].get('archive_transfer_payload_misapplied_rate', 0.0)}",
                 f"- archive_transfer_payload_success_count: {summary['selection_summary'].get('archive_transfer_payload_success_count', 0)}",
                 f"- archive_transfer_payload_success_rate: {summary['selection_summary'].get('archive_transfer_payload_success_rate', 0.0)}",
+                f"- archive_transfer_payload_matched_lift: {summary['selection_summary'].get('archive_transfer_payload_matched_lift', 0.0)}",
+                f"- archive_transfer_payload_mismatched_lift: {summary['selection_summary'].get('archive_transfer_payload_mismatched_lift', 0.0)}",
                 f"- archive_admitted_count: {summary['selection_summary'].get('archive_admitted_count', 0)}",
                 f"- newly_admitted_count: {summary['selection_summary'].get('newly_admitted_count', 0)}",
                 f"- post_admission_grace_count: {summary['selection_summary'].get('post_admission_grace_count', 0)}",
@@ -2785,6 +2950,7 @@ class GenerationRunner:
                 f"inherited_memorials={len(update['inherited_memorial_ids'])} "
                 f"transfer_payload_active={update.get('transfer_payload_active', False)} "
                 f"transfer_payload_used={update.get('transfer_payload_used', False)} "
+                f"trigger_matched={update.get('transfer_payload_trigger_matched', False)} "
                 f"variant={update['prompt_variant_id']} policy={update['package_policy_id']} origin={update['variant_origin']}"
             )
         lines.extend(["", "## Prompt Variation", ""])
@@ -2832,6 +2998,10 @@ class GenerationRunner:
             lines.append(f"- archive_transfer_payload_success_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_transfer_payload_failure_roles", []):
             lines.append(f"- archive_transfer_payload_failure_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_transfer_trigger_match_roles", []):
+            lines.append(f"- archive_transfer_trigger_match_role:{role}")
+        for role in summary["selection_summary"].get("bundle_archive_transfer_misapplied_roles", []):
+            lines.append(f"- archive_transfer_misapplied_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_eviction_roles", []):
             lines.append(f"- archive_eviction_role:{role}")
         for role in summary["selection_summary"].get("bundle_archive_repeat_eviction_roles", []):
@@ -2914,7 +3084,11 @@ class GenerationRunner:
                 f"payload_available={item.get('archive_transfer_payload_available_count', 0)} "
                 f"payload_used={item.get('archive_transfer_payload_used_count', 0)} "
                 f"payload_used_rate={item.get('archive_transfer_payload_used_rate', 0.0)} "
-                f"payload_success_rate={item.get('archive_transfer_payload_success_rate', 0.0)}"
+                f"trigger_match_rate={item.get('archive_transfer_payload_trigger_match_rate', 0.0)} "
+                f"misapplied_rate={item.get('archive_transfer_payload_misapplied_rate', 0.0)} "
+                f"payload_success_rate={item.get('archive_transfer_payload_success_rate', 0.0)} "
+                f"matched_lift={item.get('archive_transfer_payload_matched_child_mean_lift', 0.0)} "
+                f"mismatched_lift={item.get('archive_transfer_payload_mismatched_child_mean_lift', 0.0)}"
             )
         for item in summary["selection_summary"].get("archive_evicted_bundles", []):
             lines.append(

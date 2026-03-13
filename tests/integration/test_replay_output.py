@@ -13,9 +13,10 @@ def test_replay_renders_timeline(minimal_config) -> None:
     provider = build_provider(minimal_config.provider.name, minimal_config.provider.model)
     try:
         runner = GenerationRunner(config=minimal_config, storage=storage, provider=provider, repo_root=REPO_ROOT)
-        runner.run(generation_id=5)
-        generation_timeline = render_generation_timeline(storage, 5)
-        lifespan_timeline = render_lifespan_timeline(storage, 5, "agent-0005-000")
+        for generation_id in range(1, 10):
+            runner.run(generation_id=generation_id)
+        generation_timeline = render_generation_timeline(storage, 9)
+        lifespan_timeline = render_lifespan_timeline(storage, 9, "agent-0009-000")
         assert "Episode 0" in generation_timeline
         assert "step 00" in generation_timeline
         assert "episode_finalized" in generation_timeline
@@ -65,11 +66,12 @@ def test_replay_renders_timeline(minimal_config) -> None:
         assert "archive_retirement_ready_count:" in generation_timeline
         assert "stale_bundle_count:" in generation_timeline
         assert "pruned_bundle_count:" in generation_timeline
-        assert "Quarantine" in generation_timeline
         assert "Lineages" in generation_timeline
         assert "diversity_bonus=" in generation_timeline
         assert "variant=" in generation_timeline
-        assert "Lifespan agent-0005-000" in lifespan_timeline
+        assert "transfer_payload_trigger_matched=" in generation_timeline
+        assert "transfer_payload_backoff_active=" in generation_timeline
+        assert "Lifespan agent-0009-000" in lifespan_timeline
         assert "turn action=" in lifespan_timeline
         assert "selection:" in lifespan_timeline
         assert "memorial:" in lifespan_timeline

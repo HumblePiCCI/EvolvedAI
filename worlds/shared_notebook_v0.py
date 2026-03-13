@@ -134,6 +134,13 @@ class SharedNotebookV0(BaseWorld):
     def interaction_state_for_agent(self, agent: Any, step_index: int) -> dict[str, Any]:
         targeted_corrections = self._open_items_for_agent(self.correction_queue, agent.agent_id)
         targeted_clarifications = self._open_items_for_agent(self.clarification_requests, agent.agent_id)
+        remaining_steps = self._remaining_base_steps(step_index)
+        if self._closure_priority_active(step_index) or remaining_steps <= 1:
+            closure_phase = "late"
+        elif step_index >= max(1, self.max_steps // 2):
+            closure_phase = "mid"
+        else:
+            closure_phase = "early"
         target_artifact_id = None
         if targeted_corrections:
             target_artifact_id = targeted_corrections[0].get("target_artifact_id")
@@ -148,6 +155,11 @@ class SharedNotebookV0(BaseWorld):
             "target_artifact_id": target_artifact_id,
             "open_corrections": targeted_corrections,
             "open_clarifications": targeted_clarifications,
+            "open_feedback_count": len(targeted_corrections) + len(targeted_clarifications),
+            "closure_phase": closure_phase,
+            "closure_priority_active": self._closure_priority_active(step_index),
+            "remaining_base_steps": remaining_steps,
+            "notebook_entry_count": len(self.notebook),
             "recent_entries": list(self.notebook[-4:]),
             "notebook_summary": self._notebook_summary(),
         }
@@ -332,6 +344,7 @@ class SharedNotebookV0(BaseWorld):
             f"Allowed actions: {', '.join(interaction['allowed_actions'])}\n"
             f"Preferred action: {interaction['preferred_action']}\n"
             f"Notebook summary: {interaction['notebook_summary']}\n"
+            f"Closure phase: {interaction['closure_phase']}\n"
             f"Open corrections for you: {correction_targets or ['none']}\n"
             f"Open clarifications for you: {clarification_targets or ['none']}\n"
             f"Inherited artifact summaries: {inherited.artifact_summaries or ['none']}\n"
@@ -339,6 +352,8 @@ class SharedNotebookV0(BaseWorld):
             f"Inherited transfer context: {inherited.transfer_context or 'none'}\n"
             f"Inherited transfer guidance: {inherited.transfer_guidance or ['none']}\n"
             f"Inherited transfer failure avoidance: {inherited.transfer_failure_avoidance or ['none']}\n"
+            f"Inherited transfer trigger conditions: {inherited.transfer_trigger_conditions or ['none']}\n"
+            f"Inherited transfer backoff conditions: {inherited.transfer_backoff_conditions or ['none']}\n"
             f"Taboo tags: {inherited.taboo_tags or ['none']}\n"
             f"Scratchpad lineage: {scratchpad['lineage_id']}\n"
             f"Scratchpad prior notes: {len(scratchpad['notes'])}\n"
