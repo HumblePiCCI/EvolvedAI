@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import statistics
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from society.analysis import build_experiment_report, render_experiment_report
 from society.config import AutoCivConfig, load_config
@@ -12,6 +12,15 @@ from society.generation import GenerationRunner
 from society.providers import build_provider
 from society.storage import StorageManager
 from society.utils import write_text
+
+COMPARATIVE_BATCH_KEYS = (
+    "failure_recurrence_rate",
+    "cooperative_truthfulness_score",
+    "correction_acceptance_average",
+    "hidden_eval_failure_rate",
+    "strategy_drift_rate",
+    "lineage_diffusion_index",
+)
 
 
 def _resolve_storage_path(repo_root: Path, value: str) -> Path:
@@ -81,6 +90,171 @@ def _run_experiment(
         storage.close()
 
 
+def _mean(values: list[float]) -> float:
+    return round(statistics.fmean(values), 4) if values else 0.0
+
+
+def _report_metric_snapshot(report: dict[str, Any]) -> dict[str, float]:
+    metrics = report["generation_metrics"]
+    final_metric = metrics[-1]
+    recurrence_values = [
+        metric["failure_recurrence_rate"]
+        for metric in metrics
+        if metric.get("failure_recurrence_opportunities", 0) > 0
+    ]
+    return {
+        "public_eval_average": _mean([metric["public_eval_average"] for metric in metrics]),
+        "cooperative_truthfulness_score": _mean(
+            [metric["cooperative_truthfulness_score"] for metric in metrics]
+        ),
+        "correction_acceptance_average": _mean(
+            [metric["correction_acceptance_average"] for metric in metrics]
+        ),
+        "hidden_eval_failure_rate": _mean([metric["hidden_eval_failure_rate"] for metric in metrics]),
+        "failure_recurrence_rate": _mean(recurrence_values),
+        "strategy_drift_rate": _mean([metric["strategy_drift_rate"] for metric in metrics]),
+        "lineage_diffusion_index": _mean([metric["lineage_diffusion_index"] for metric in metrics]),
+        "final_public_eval_average": final_metric["public_eval_average"],
+        "final_cooperative_truthfulness_score": final_metric["cooperative_truthfulness_score"],
+        "final_correction_acceptance_average": final_metric["correction_acceptance_average"],
+        "final_hidden_eval_failure_rate": final_metric["hidden_eval_failure_rate"],
+        "final_failure_recurrence_rate": final_metric["failure_recurrence_rate"],
+        "final_strategy_drift_rate": final_metric["strategy_drift_rate"],
+        "final_lineage_diffusion_index": final_metric["lineage_diffusion_index"],
+    }
+
+
+def _resolve_output_base(repo_root: Path, root_dir: Path, output_prefix: str | None, default_name: str) -> Path:
+    if output_prefix is None:
+        return root_dir / "exports" / default_name
+    output_path = Path(output_prefix)
+    return output_path if output_path.is_absolute() else repo_root / output_path
+
+
+def _comparative_batch_summary(
+    reports_by_seed: dict[int, dict[str, dict[str, Any]]],
+    selected_modes: list[str],
+) -> list[dict[str, Any]]:
+    seed_metrics_by_mode: dict[str, list[dict[str, Any]]] = {mode: [] for mode in selected_modes}
+    for seed, mode_reports in sorted(reports_by_seed.items()):
+        for mode in selected_modes:
+            report = mode_reports[mode]
+            seed_metrics_by_mode[mode].append(
+                {
+                    "seed": seed,
+                    **_report_metric_snapshot(report),
+                    "generation_ids": report["generation_ids"],
+                    "exports": report.get("exports", {}),
+                }
+            )
+
+    summaries: list[dict[str, Any]] = []
+    by_mode: dict[str, dict[str, Any]] = {}
+    for mode in selected_modes:
+        seed_metrics = seed_metrics_by_mode[mode]
+        batch_means = {
+            key: _mean([item[key] for item in seed_metrics])
+            for key in (
+                "public_eval_average",
+                "cooperative_truthfulness_score",
+                "correction_acceptance_average",
+                "hidden_eval_failure_rate",
+                "failure_recurrence_rate",
+                "strategy_drift_rate",
+                "lineage_diffusion_index",
+                "final_public_eval_average",
+                "final_cooperative_truthfulness_score",
+                "final_correction_acceptance_average",
+                "final_hidden_eval_failure_rate",
+                "final_failure_recurrence_rate",
+                "final_strategy_drift_rate",
+                "final_lineage_diffusion_index",
+            )
+        }
+        summary = {
+            "mode": mode,
+            "seed_count": len(seed_metrics),
+            "seed_metrics": seed_metrics,
+            "batch_means": batch_means,
+        }
+        summaries.append(summary)
+        by_mode[mode] = summary
+
+    isolated_baseline_summary = by_mode.get("isolated_baseline")
+    isolated_baseline = (
+        None
+        if isolated_baseline_summary is None
+        else cast(dict[str, float], isolated_baseline_summary["batch_means"])
+    )
+    inheritance_off_summary = by_mode.get("inheritance_off")
+    inheritance_off_baseline = (
+        None
+        if inheritance_off_summary is None
+        else cast(dict[str, float], inheritance_off_summary["batch_means"])
+    )
+    for summary in summaries:
+        batch = cast(dict[str, float], summary["batch_means"])
+        if isolated_baseline is not None:
+            summary["deltas_vs_isolated_baseline"] = {
+                "cooperative_truthfulness_score_delta": round(
+                    batch["cooperative_truthfulness_score"] - isolated_baseline["cooperative_truthfulness_score"],
+                    4,
+                ),
+                "correction_acceptance_average_delta": round(
+                    batch["correction_acceptance_average"] - isolated_baseline["correction_acceptance_average"],
+                    4,
+                ),
+                "hidden_eval_failure_rate_delta": round(
+                    batch["hidden_eval_failure_rate"] - isolated_baseline["hidden_eval_failure_rate"],
+                    4,
+                ),
+                "hidden_eval_failure_rate_reduction": round(
+                    isolated_baseline["hidden_eval_failure_rate"] - batch["hidden_eval_failure_rate"],
+                    4,
+                ),
+                "strategy_drift_rate_delta": round(
+                    batch["strategy_drift_rate"] - isolated_baseline["strategy_drift_rate"],
+                    4,
+                ),
+                "lineage_diffusion_index_delta": round(
+                    batch["lineage_diffusion_index"] - isolated_baseline["lineage_diffusion_index"],
+                    4,
+                ),
+            }
+        if inheritance_off_baseline is not None:
+            summary["deltas_vs_inheritance_off"] = {
+                "failure_recurrence_rate_delta": round(
+                    batch["failure_recurrence_rate"] - inheritance_off_baseline["failure_recurrence_rate"],
+                    4,
+                ),
+                "recurrence_reduction": round(
+                    inheritance_off_baseline["failure_recurrence_rate"] - batch["failure_recurrence_rate"],
+                    4,
+                ),
+                "cooperative_truthfulness_score_delta": round(
+                    batch["cooperative_truthfulness_score"] - inheritance_off_baseline["cooperative_truthfulness_score"],
+                    4,
+                ),
+                "correction_acceptance_average_delta": round(
+                    batch["correction_acceptance_average"] - inheritance_off_baseline["correction_acceptance_average"],
+                    4,
+                ),
+                "hidden_eval_failure_rate_reduction": round(
+                    inheritance_off_baseline["hidden_eval_failure_rate"] - batch["hidden_eval_failure_rate"],
+                    4,
+                ),
+                "strategy_drift_rate_delta": round(
+                    batch["strategy_drift_rate"] - inheritance_off_baseline["strategy_drift_rate"],
+                    4,
+                ),
+                "lineage_diffusion_index_delta": round(
+                    batch["lineage_diffusion_index"] - inheritance_off_baseline["lineage_diffusion_index"],
+                    4,
+                ),
+            }
+    return summaries
+
+
 def _suite_summary(reports_by_mode: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     baseline = reports_by_mode.get("isolated_baseline")
     baseline_final = None if baseline is None else baseline["generation_metrics"][-1]
@@ -88,6 +262,7 @@ def _suite_summary(reports_by_mode: dict[str, dict[str, Any]]) -> list[dict[str,
     for mode, report in reports_by_mode.items():
         metrics = report["generation_metrics"]
         final_metric = metrics[-1]
+        metric_snapshot = _report_metric_snapshot(report)
         average_transfer = round(
             statistics.fmean(metric["memorial_transfer_score"] for metric in metrics),
             4,
@@ -104,6 +279,16 @@ def _suite_summary(reports_by_mode: dict[str, dict[str, Any]]) -> list[dict[str,
             "average_memorial_transfer_score": average_transfer,
             "final_warned_lineages": final_metric["warned_lineages"],
             "final_strategy_drift_rate": final_metric["strategy_drift_rate"],
+            "final_cooperative_truthfulness_score": final_metric["cooperative_truthfulness_score"],
+            "final_correction_acceptance_average": final_metric["correction_acceptance_average"],
+            "final_hidden_eval_failure_rate": final_metric["hidden_eval_failure_rate"],
+            "final_failure_recurrence_rate": final_metric["failure_recurrence_rate"],
+            "final_lineage_diffusion_index": final_metric["lineage_diffusion_index"],
+            "average_cooperative_truthfulness_score": metric_snapshot["cooperative_truthfulness_score"],
+            "average_correction_acceptance_average": metric_snapshot["correction_acceptance_average"],
+            "average_hidden_eval_failure_rate": metric_snapshot["hidden_eval_failure_rate"],
+            "average_failure_recurrence_rate": metric_snapshot["failure_recurrence_rate"],
+            "average_lineage_diffusion_index": metric_snapshot["lineage_diffusion_index"],
             "final_propagation_blocked": final_metric["propagation_blocked"],
             "final_review_only": final_metric["review_only"],
             "total_hidden_failures": total_hidden_failures,
@@ -148,6 +333,59 @@ def render_hypothesis_suite_report(report: dict[str, Any]) -> str:
                 f"  delta_vs_isolated: public_eval_average={item['delta_vs_isolated_public_eval_average']} "
                 f"memorial_transfer_score={item['delta_vs_isolated_memorial_transfer_score']} "
                 f"strategy_drift_rate={item['delta_vs_isolated_strategy_drift_rate']}"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def render_comparative_batches_report(report: dict[str, Any]) -> str:
+    lines = [
+        f"# Comparative Batches {report['generation_span'][0]}-{report['generation_span'][1]}",
+        "",
+        f"- seeds: {', '.join(str(seed) for seed in report['seeds'])}",
+        "",
+        "## Metric Definitions",
+        "",
+        "- failure_recurrence_rate: share of child lineages repeating a parent failure when parent failures existed.",
+        "- cooperative_truthfulness_score: mean of honesty, calibration, and citation_fidelity public eval scores.",
+        "- correction_acceptance_average: mean correction_acceptance public eval score.",
+        "- hidden_eval_failure_rate: failed hidden evals divided by total hidden eval records.",
+        "- strategy_drift_rate and lineage_diffusion_index: raw drift/diffusion signals, reported as deltas rather than signed improvements.",
+        "",
+        "## Modes",
+        "",
+    ]
+    for item in report["mode_summaries"]:
+        batch = item["batch_means"]
+        lines.append(
+            f"- {item['mode']}: recurrence_rate={batch['failure_recurrence_rate']} "
+            f"cooperative_truthfulness={batch['cooperative_truthfulness_score']} "
+            f"correction_acceptance={batch['correction_acceptance_average']} "
+            f"hidden_eval_failure_rate={batch['hidden_eval_failure_rate']} "
+            f"strategy_drift_rate={batch['strategy_drift_rate']} "
+            f"lineage_diffusion_index={batch['lineage_diffusion_index']}"
+        )
+        isolated = item.get("deltas_vs_isolated_baseline")
+        if isolated is not None:
+            lines.append(
+                "  vs_isolated_baseline: "
+                f"cooperative_truthfulness={isolated['cooperative_truthfulness_score_delta']} "
+                f"correction_acceptance={isolated['correction_acceptance_average_delta']} "
+                f"hidden_eval_failure_rate_delta={isolated['hidden_eval_failure_rate_delta']} "
+                f"hidden_eval_failure_rate_reduction={isolated['hidden_eval_failure_rate_reduction']} "
+                f"strategy_drift_rate={isolated['strategy_drift_rate_delta']} "
+                f"lineage_diffusion_index={isolated['lineage_diffusion_index_delta']}"
+            )
+        inheritance_off = item.get("deltas_vs_inheritance_off")
+        if inheritance_off is not None:
+            lines.append(
+                "  vs_inheritance_off: "
+                f"failure_recurrence_rate={inheritance_off['failure_recurrence_rate_delta']} "
+                f"recurrence_reduction={inheritance_off['recurrence_reduction']} "
+                f"cooperative_truthfulness={inheritance_off['cooperative_truthfulness_score_delta']} "
+                f"correction_acceptance={inheritance_off['correction_acceptance_average_delta']} "
+                f"hidden_eval_failure_rate_reduction={inheritance_off['hidden_eval_failure_rate_reduction']} "
+                f"strategy_drift_rate={inheritance_off['strategy_drift_rate_delta']} "
+                f"lineage_diffusion_index={inheritance_off['lineage_diffusion_index_delta']}"
             )
     return "\n".join(lines) + "\n"
 
@@ -200,11 +438,7 @@ def run_hypothesis_suite_from_config(
     base_config = load_config(resolved_config_path)
     selected_modes = list(modes or EXPERIMENT_MODES)
     base_root_dir = _resolve_storage_path(repo_root, base_config.storage.root_dir)
-    suite_output_base = (
-        (Path(output_prefix) if output_prefix is not None else base_root_dir / "exports" / "hypothesis_suite")
-        if output_prefix is None or Path(output_prefix).is_absolute()
-        else repo_root / output_prefix
-    )
+    suite_output_base = _resolve_output_base(repo_root, base_root_dir, output_prefix, "hypothesis_suite")
     reports_by_mode: dict[str, dict[str, Any]] = {}
     for mode in selected_modes:
         mode_root_dir = base_root_dir / "hypothesis_modes" / mode
@@ -244,6 +478,91 @@ def run_hypothesis_suite_from_config(
     )
     return {
         **suite_report,
+        "exports": {
+            "json_path": str(json_path),
+            "markdown_path": str(md_path),
+        },
+    }
+
+
+def run_comparative_batches_from_config(
+    *,
+    config_path: str | Path,
+    repo_root: str | Path = ".",
+    generations: int,
+    seeds: list[int],
+    modes: list[str] | None = None,
+    start_generation_id: int | None = None,
+    output_prefix: str | None = None,
+) -> dict[str, Any]:
+    if generations <= 0:
+        raise ValueError("generations must be greater than zero")
+    if not seeds:
+        raise ValueError("seeds must contain at least one seed")
+
+    repo_root = Path(repo_root)
+    resolved_config_path = repo_root / config_path if not Path(config_path).is_absolute() else Path(config_path)
+    base_config = load_config(resolved_config_path)
+    selected_modes = list(modes or EXPERIMENT_MODES)
+    base_root_dir = _resolve_storage_path(repo_root, base_config.storage.root_dir)
+    comparative_output_base = _resolve_output_base(
+        repo_root,
+        base_root_dir,
+        output_prefix,
+        "comparative_batches",
+    )
+
+    reports_by_seed: dict[int, dict[str, dict[str, Any]]] = {}
+    seed_runs: dict[str, dict[str, Any]] = {}
+    for seed in seeds:
+        mode_reports: dict[str, dict[str, Any]] = {}
+        seed_snapshot: dict[str, Any] = {}
+        for mode in selected_modes:
+            mode_root_dir = base_root_dir / "comparative_batches" / f"seed_{seed}" / mode
+            mode_config = _config_with_mode_and_storage(
+                base_config,
+                mode=mode,
+                root_dir=mode_root_dir,
+                db_path=mode_root_dir / "db.sqlite",
+            )
+            mode_report = _run_experiment(
+                config=mode_config,
+                repo_root=repo_root,
+                generations=generations,
+                start_generation_id=start_generation_id,
+                seed=seed,
+                output_prefix=comparative_output_base / f"seed_{seed}" / mode / "experiment",
+            )
+            mode_reports[mode] = mode_report
+            seed_snapshot[mode] = {
+                "generation_ids": mode_report["generation_ids"],
+                "metric_snapshot": _report_metric_snapshot(mode_report),
+                "exports": mode_report.get("exports", {}),
+            }
+        reports_by_seed[seed] = mode_reports
+        seed_runs[str(seed)] = seed_snapshot
+
+    generation_span = (
+        start_generation_id or 1,
+        (start_generation_id or 1) + generations - 1,
+    )
+    comparative_report = {
+        "seeds": seeds,
+        "modes": selected_modes,
+        "generation_span": generation_span,
+        "mode_summaries": _comparative_batch_summary(reports_by_seed, selected_modes),
+        "seed_runs": seed_runs,
+    }
+    json_path = write_text(
+        comparative_output_base.with_suffix(".json"),
+        json.dumps(comparative_report, indent=2, sort_keys=True),
+    )
+    md_path = write_text(
+        comparative_output_base.with_suffix(".md"),
+        render_comparative_batches_report(comparative_report),
+    )
+    return {
+        **comparative_report,
         "exports": {
             "json_path": str(json_path),
             "markdown_path": str(md_path),
