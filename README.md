@@ -29,6 +29,20 @@ uv run pytest
 uv run python scripts/run_generation.py --config config/defaults.yaml
 ```
 
+Hypothesis harness:
+
+```bash
+uv run python scripts/run_hypothesis_suite.py --config config/defaults.yaml --generations 3
+```
+
+Available experiment modes:
+
+- `inheritance_on`
+- `inheritance_off`
+- `memorials_only`
+- `taboo_registry_only`
+- `isolated_baseline`
+
 Verification layer:
 
 ```bash

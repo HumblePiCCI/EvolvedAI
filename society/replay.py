@@ -19,7 +19,10 @@ def render_generation_timeline(storage: StorageManager, generation_id: int) -> s
 
     lines = [
         f"Generation {generation_id}",
-        f"status={generation.status} world={generation.world_name} seed={generation.seed}",
+        (
+            f"status={generation.status} world={generation.world_name} seed={generation.seed} "
+            f"mode={generation.summary_json.get('experiment_mode', 'inheritance_on')}"
+        ),
         f"agents={len(agents)} events={len(events)} artifacts={len(storage.list_generation_artifacts(generation_id))}",
         "",
     ]

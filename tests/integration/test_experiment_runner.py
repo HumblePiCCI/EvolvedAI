@@ -26,6 +26,7 @@ def test_run_experiment_exports_batch_and_lineage_history(config_path: Path) -> 
     assert report["lineages"]
     assert "inheritance_effect" in report
     assert "transfer_score" in report["inheritance_effect"]
+    assert all(metric["experiment_mode"] == "inheritance_on" for metric in report["generation_metrics"])
     assert any(metric["memorial_transfer_score"] > 0.0 for metric in report["generation_metrics"][1:])
     assert "monoculture_index" in report["generation_metrics"][0]
     assert "most_converged_role" in report["generation_metrics"][0]
@@ -124,6 +125,7 @@ def test_run_experiment_exports_batch_and_lineage_history(config_path: Path) -> 
     try:
         lineage_report = build_lineage_report(storage, report["lineages"][0]["lineage_id"])
         assert lineage_report["survival_history"]
+        assert lineage_report["selected_lineage"]["experiment_mode"] == "inheritance_on"
         assert lineage_report["selected_lineage"]["outcome"] in {
             "propagated",
             "eligible_pending",
