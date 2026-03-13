@@ -6,6 +6,9 @@ Bootstrap commands:
 uv sync
 uv run pytest
 uv run python scripts/run_generation.py --config config/defaults.yaml
+uv run python scripts/run_generation.py --config config/defaults.yaml --mode inheritance_off
+uv run python scripts/run_experiment.py --config config/defaults.yaml --generations 5 --mode memorials_only
+uv run python scripts/run_hypothesis_suite.py --config config/defaults.yaml --generations 5
 ./scripts/verify_ci.sh
 ```
 

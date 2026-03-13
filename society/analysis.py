@@ -155,6 +155,7 @@ def lineage_entries(
         entry = {
             "lineage_id": lineage.lineage_id,
             "generation_id": lineage.current_generation_id,
+            "experiment_mode": summary.get("experiment_mode", "inheritance_on"),
             "agent_id": None if agent is None else agent.agent_id,
             "role": None if agent is None else agent.role,
             "status": lineage.status,
@@ -470,6 +471,7 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         generation_metrics.append(
             {
                 "generation_id": generation.generation_id,
+                "experiment_mode": summary.get("experiment_mode", "inheritance_on"),
                 "public_eval_average": summary.get("public_eval_average", 0.0),
                 "eligible": selection_summary.get("eligible", 0),
                 "propagation_blocked": selection_summary.get("propagation_blocked", 0),
@@ -1130,7 +1132,7 @@ def render_experiment_report(report: dict[str, Any]) -> str:
     ]
     for metric in report["generation_metrics"]:
         lines.append(
-            f"- g{metric['generation_id']}: public_eval_average={metric['public_eval_average']} "
+            f"- g{metric['generation_id']}[{metric['experiment_mode']}]: public_eval_average={metric['public_eval_average']} "
             f"eligible={metric['eligible']} blocked={metric['propagation_blocked']} "
             f"review_only={metric['review_only']} diffusion_alerts={metric['diffusion_alerts']} "
             f"anti_corruption={metric['anti_corruption']} warned_lineages={metric['warned_lineages']} "

@@ -18,3 +18,9 @@ def test_config_rejects_role_population_mismatch(config_data: dict) -> None:
     with pytest.raises(ValueError):
         AutoCivConfig.model_validate(broken)
 
+
+def test_config_rejects_unknown_experiment_mode(config_data: dict) -> None:
+    broken = dict(config_data)
+    broken["experiment"] = {"mode": "unknown_mode"}
+    with pytest.raises(ValueError):
+        AutoCivConfig.model_validate(broken)
