@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from society.constants import DEFAULT_HIDDEN_EVALS, DEFAULT_PUBLIC_EVALS, DEFAULT_ROLE_BEHAVIORS
+from society.constants import (
+    DEFAULT_HIDDEN_EVALS,
+    DEFAULT_PUBLIC_EVALS,
+    DEFAULT_ROLE_BEHAVIORS,
+)
 from society.utils import stable_json_dumps
 
 
@@ -65,6 +70,19 @@ class InheritanceConfig(StrictConfigModel):
     quarantine_enabled: bool = True
 
 
+ExperimentMode = Literal[
+    "inheritance_on",
+    "inheritance_off",
+    "memorials_only",
+    "taboo_registry_only",
+    "isolated_baseline",
+]
+
+
+class ExperimentConfig(StrictConfigModel):
+    mode: ExperimentMode = "inheritance_on"
+
+
 class EvalsConfig(StrictConfigModel):
     public: list[str] = Field(default_factory=lambda: list(DEFAULT_PUBLIC_EVALS))
     hidden: list[str] = Field(default_factory=lambda: list(DEFAULT_HIDDEN_EVALS))
@@ -90,6 +108,7 @@ class AutoCivConfig(StrictConfigModel):
     world: WorldSelection = Field(default_factory=WorldSelection)
     worlds: WorldsConfig = Field(default_factory=WorldsConfig)
     roles: RolesConfig = Field(default_factory=RolesConfig)
+    experiment: ExperimentConfig = Field(default_factory=ExperimentConfig)
     inheritance: InheritanceConfig = Field(default_factory=InheritanceConfig)
     evals: EvalsConfig = Field(default_factory=EvalsConfig)
     governance: GovernanceConfig = Field(default_factory=GovernanceConfig)
@@ -127,4 +146,3 @@ def dump_config_snapshot(config: AutoCivConfig) -> str:
 
 def config_hash(config: AutoCivConfig) -> str:
     return stable_json_dumps(config.snapshot())
-

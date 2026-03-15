@@ -29,6 +29,8 @@ roles:
     steward: honest
     archivist: honest
     adversary: manipulative
+experiment:
+  mode: inheritance_on
 inheritance:
   artifact_summaries_per_agent: 3
   memorials_per_agent: 2
@@ -54,4 +56,3 @@ storage:
   db_path: data/db.sqlite
 logging:
   jsonl_enabled: true
-

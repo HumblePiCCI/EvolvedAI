@@ -7,6 +7,8 @@ from society.constants import QUARANTINE_REVIEW
 from society.storage import StorageManager
 from society.trust import classify_warning_outcome, summarize_warning_effect, warning_labels
 
+TRUTHFULNESS_EVAL_NAMES = ("honesty", "calibration", "citation_fidelity")
+
 
 def _artifact_brief(storage: StorageManager, artifact_id: str) -> dict[str, Any] | None:
     artifact = storage.get_artifact(artifact_id)
@@ -84,6 +86,64 @@ def _bundle_set(lineage_updates: list[dict[str, Any]]) -> set[tuple[str, str, st
     }
 
 
+def _public_eval_summary(storage: StorageManager, generation_id: int) -> dict[str, Any]:
+    public_scores: dict[str, list[float]] = defaultdict(list)
+    hidden_total = 0
+    hidden_failed = 0
+    for record in storage.list_generation_evals(generation_id):
+        if record.eval_family == "public" and record.score is not None:
+            public_scores[record.eval_name].append(float(record.score))
+        elif record.eval_family == "hidden":
+            hidden_total += 1
+            if record.pass_fail is False:
+                hidden_failed += 1
+
+    public_averages = {
+        name: round(sum(scores) / len(scores), 4)
+        for name, scores in public_scores.items()
+        if scores
+    }
+    truthfulness_inputs = [public_averages[name] for name in TRUTHFULNESS_EVAL_NAMES if name in public_averages]
+    cooperative_truthfulness = (
+        round(sum(truthfulness_inputs) / len(truthfulness_inputs), 4) if truthfulness_inputs else 0.0
+    )
+    hidden_failure_rate = round(hidden_failed / hidden_total, 4) if hidden_total else 0.0
+    return {
+        "public_averages": public_averages,
+        "cooperative_truthfulness_score": cooperative_truthfulness,
+        "hidden_eval_failure_rate": hidden_failure_rate,
+    }
+
+
+def _failure_recurrence_stats(
+    summary: dict[str, Any],
+    lineage_failures_by_id: dict[str, set[str]],
+) -> tuple[int, int, float, dict[str, set[str]]]:
+    current_failure_sets = {
+        item["lineage_id"]: set(item.get("hidden_failures", [])) | set(item.get("public_failures", []))
+        for item in summary.get("selection_outcome", [])
+        if item.get("lineage_id")
+    }
+
+    recurrence_opportunities = 0
+    recurrence_count = 0
+    for update in summary.get("lineage_updates", []):
+        lineage_id = update.get("lineage_id")
+        if not lineage_id:
+            continue
+        parent_failures = set()
+        for parent_lineage_id in update.get("parent_lineage_ids", []):
+            parent_failures.update(lineage_failures_by_id.get(parent_lineage_id, set()))
+        if not parent_failures:
+            continue
+        recurrence_opportunities += 1
+        if current_failure_sets.get(lineage_id, set()) & parent_failures:
+            recurrence_count += 1
+
+    recurrence_rate = round(recurrence_count / recurrence_opportunities, 4) if recurrence_opportunities else 0.0
+    return recurrence_count, recurrence_opportunities, recurrence_rate, current_failure_sets
+
+
 def lineage_entries(
     storage: StorageManager,
     generation_ids: list[int] | None = None,
@@ -155,6 +215,7 @@ def lineage_entries(
         entry = {
             "lineage_id": lineage.lineage_id,
             "generation_id": lineage.current_generation_id,
+            "experiment_mode": summary.get("experiment_mode", "inheritance_on"),
             "agent_id": None if agent is None else agent.agent_id,
             "role": None if agent is None else agent.role,
             "status": lineage.status,
@@ -363,8 +424,14 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
     generation_metrics = []
     previous_bundles: set[tuple[str, str, str]] | None = None
     previous_exploratory_bundles: set[tuple[str, str, str]] = set()
+    lineage_failures_by_id: dict[str, set[str]] = {}
     for generation in generations:
         summary = generation.summary_json
+        public_eval_summary = _public_eval_summary(storage, generation.generation_id)
+        recurrence_count, recurrence_opportunities, recurrence_rate, current_failure_sets = _failure_recurrence_stats(
+            summary,
+            lineage_failures_by_id,
+        )
         hidden_counts = summary.get("hidden_eval_failure_counts", {})
         selection_summary = summary.get("selection_summary", {})
         role_monoculture = selection_summary.get("role_monoculture_index", {})
@@ -470,7 +537,18 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
         generation_metrics.append(
             {
                 "generation_id": generation.generation_id,
+                "experiment_mode": summary.get("experiment_mode", "inheritance_on"),
                 "public_eval_average": summary.get("public_eval_average", 0.0),
+                "honesty_average": public_eval_summary["public_averages"].get("honesty", 0.0),
+                "calibration_average": public_eval_summary["public_averages"].get("calibration", 0.0),
+                "citation_fidelity_average": public_eval_summary["public_averages"].get("citation_fidelity", 0.0),
+                "correction_acceptance_average": public_eval_summary["public_averages"].get(
+                    "correction_acceptance",
+                    0.0,
+                ),
+                "artifact_quality_average": public_eval_summary["public_averages"].get("artifact_quality", 0.0),
+                "cooperative_truthfulness_score": public_eval_summary["cooperative_truthfulness_score"],
+                "hidden_eval_failure_rate": public_eval_summary["hidden_eval_failure_rate"],
                 "eligible": selection_summary.get("eligible", 0),
                 "propagation_blocked": selection_summary.get("propagation_blocked", 0),
                 "review_only": selection_summary.get("review_only", 0),
@@ -483,6 +561,9 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                     "transfer_score",
                     summary.get("drift", {}).get("memorial_transfer_score", 0.0),
                 ),
+                "failure_recurrence_count": recurrence_count,
+                "failure_recurrence_opportunities": recurrence_opportunities,
+                "failure_recurrence_rate": recurrence_rate,
                 "monoculture_index": max(scoped_monoculture.values(), default=0.0),
                 "most_converged_role": (
                     max(scoped_monoculture, key=lambda role: scoped_monoculture[role]) if scoped_monoculture else None
@@ -741,11 +822,13 @@ def build_experiment_report(storage: StorageManager, generation_ids: list[int]) 
                 "parent_concentration_index": parent_concentration,
                 "most_reused_parent_role": most_reused_parent_role,
                 "strategy_drift_rate": summary.get("drift", {}).get("strategy_drift_rate", 0.0),
+                "lineage_diffusion_index": summary.get("drift", {}).get("lineage_diffusion_index", 0.0),
                 "drift_pressure_lineages": selection_summary.get("variant_origin_counts", {}).get("drift_pressure", 0),
             }
         )
         previous_bundles = current_bundles
         previous_exploratory_bundles = exploratory_bundles
+        lineage_failures_by_id.update(current_failure_sets)
 
     lineages = lineage_entries(storage, generation_ids=generation_ids)
     outcome_counts = Counter(entry["outcome"] for entry in lineages)
@@ -1130,11 +1213,15 @@ def render_experiment_report(report: dict[str, Any]) -> str:
     ]
     for metric in report["generation_metrics"]:
         lines.append(
-            f"- g{metric['generation_id']}: public_eval_average={metric['public_eval_average']} "
+            f"- g{metric['generation_id']}[{metric['experiment_mode']}]: public_eval_average={metric['public_eval_average']} "
+            f"cooperative_truthfulness_score={metric['cooperative_truthfulness_score']} "
+            f"correction_acceptance_average={metric['correction_acceptance_average']} "
+            f"hidden_eval_failure_rate={metric['hidden_eval_failure_rate']} "
             f"eligible={metric['eligible']} blocked={metric['propagation_blocked']} "
             f"review_only={metric['review_only']} diffusion_alerts={metric['diffusion_alerts']} "
             f"anti_corruption={metric['anti_corruption']} warned_lineages={metric['warned_lineages']} "
             f"memorial_transfer_score={metric['memorial_transfer_score']} "
+            f"failure_recurrence_rate={metric['failure_recurrence_rate']} "
             f"monoculture_index={metric['monoculture_index']} "
             f"prompt_variant_count={metric['prompt_variant_count']} "
             f"prompt_bundle_count={metric['prompt_bundle_count']} "
@@ -1147,6 +1234,7 @@ def render_experiment_report(report: dict[str, Any]) -> str:
             f"new_bundle_win_rate={metric['new_bundle_win_rate']} "
             f"exploration_bundle_survival_rate={metric['exploration_bundle_survival_rate']} "
             f"preserved_bundle_count={metric['preserved_bundle_count']} "
+            f"lineage_diffusion_index={metric['lineage_diffusion_index']} "
             f"bundle_archive_count={metric['bundle_archive_count']} "
             f"archive_admission_pending_count={metric['archive_admission_pending_count']} "
             f"archive_proving_count={metric['archive_proving_count']} "

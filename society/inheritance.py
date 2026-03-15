@@ -156,6 +156,7 @@ def assemble_inheritance_package(
     memorial_limit: int,
     policy_id: str = "balanced",
     extra_taboo_tags: list[str] | None = None,
+    include_memorial_taboo_tags: bool = True,
     transfer_payload: dict[str, Any] | None = None,
 ) -> InheritancePackage:
     clean_artifacts = [artifact for artifact in artifacts if artifact.quarantine_status == QUARANTINE_CLEAN]
@@ -205,7 +206,12 @@ def assemble_inheritance_package(
 
     chosen_artifacts = clean_artifacts[:artifact_limit]
     chosen_memorials = clean_memorials[:memorial_limit]
-    taboo_tags = sorted({*collect_taboo_tags(chosen_memorials), *(extra_taboo_tags or [])})
+    taboo_tags = sorted(
+        {
+            *((collect_taboo_tags(chosen_memorials) if include_memorial_taboo_tags else [])),
+            *(extra_taboo_tags or []),
+        }
+    )
     return InheritancePackage(
         artifact_ids=[artifact.artifact_id for artifact in chosen_artifacts],
         memorial_ids=[memorial.memorial_id for memorial in chosen_memorials],

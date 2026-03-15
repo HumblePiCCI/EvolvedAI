@@ -36,6 +36,11 @@ from society.constants import (
     DRIFT_PRESSURE_EXPLORATION_SLOTS,
     DRIFT_PRESSURE_MIN_ROLE_SIZE,
     DRIFT_PRESSURE_MONOCULTURE_THRESHOLD,
+    EXPERIMENT_MODE_INHERITANCE_OFF,
+    EXPERIMENT_MODE_INHERITANCE_ON,
+    EXPERIMENT_MODE_ISOLATED_BASELINE,
+    EXPERIMENT_MODE_MEMORIALS_ONLY,
+    EXPERIMENT_MODE_TABOO_REGISTRY_ONLY,
     QUARANTINE_CLEAN,
     QUARANTINE_REVIEW,
     QUARANTINE_SEVERITY,
@@ -114,6 +119,50 @@ class GenerationRunner:
             or event.event_payload.get("target_agent_id") == agent_id
             or event.event_payload.get("resolved_by") == agent_id
         ]
+
+    def _experiment_mode(self) -> str:
+        return self.config.experiment.mode
+
+    def _isolated_mode(self) -> bool:
+        return self._experiment_mode() == EXPERIMENT_MODE_ISOLATED_BASELINE
+
+    def _inheritance_inputs_for_mode(
+        self,
+        *,
+        role: str,
+        world_name: str,
+        policy_id: str,
+        source_bundle_signature: str | None,
+        source_bundle_state: dict[str, Any],
+        parent_artifacts: list[ArtifactRecord],
+        parent_memorials: list[Any],
+        inherited_taboo_tags: list[str],
+    ) -> tuple[list[ArtifactRecord], list[Any], list[str], bool, dict[str, Any] | None]:
+        mode = self._experiment_mode()
+        if mode == EXPERIMENT_MODE_INHERITANCE_ON:
+            return (
+                parent_artifacts,
+                parent_memorials,
+                inherited_taboo_tags,
+                True,
+                build_archive_transfer_payload(
+                    role=role,
+                    world_name=world_name,
+                    policy_id=policy_id,
+                    source_bundle_signature=source_bundle_signature,
+                    source_bundle_state=source_bundle_state,
+                    artifacts=parent_artifacts,
+                    memorials=parent_memorials,
+                    taboo_tags=inherited_taboo_tags,
+                ),
+            )
+        if mode == EXPERIMENT_MODE_MEMORIALS_ONLY:
+            return parent_artifacts[:0], parent_memorials, [], False, None
+        if mode == EXPERIMENT_MODE_TABOO_REGISTRY_ONLY:
+            return parent_artifacts[:0], parent_memorials[:0], inherited_taboo_tags, False, None
+        if mode in {EXPERIMENT_MODE_INHERITANCE_OFF, EXPERIMENT_MODE_ISOLATED_BASELINE}:
+            return parent_artifacts[:0], parent_memorials[:0], [], False, None
+        return parent_artifacts, parent_memorials, inherited_taboo_tags, True, None
 
     def _persist_artifact(
         self,
@@ -1454,6 +1503,7 @@ class GenerationRunner:
                     available_citations = [artifact.artifact_id for artifact in all_artifacts]
                     result = self.lifespan.run_step(
                         generation_id=generation_id,
+                        generation_seed=generation_seed,
                         episode_index=episode_index,
                         agent=agent,
                         prompt=self.prompt_bundles_by_agent[agent.agent_id],
@@ -1673,6 +1723,7 @@ class GenerationRunner:
         used_bundle_signatures_by_role: dict[str, set[str]] = defaultdict(set)
         drift_pressure_roles = self._drift_pressure_roles(parent_context)
         drift_pressure_used: dict[str, int] = defaultdict(int)
+        isolated_mode = self._isolated_mode()
         for role, count in self.config.roles.distribution.items():
             roles.extend([role] * count)
         for index, role in enumerate(roles):
@@ -1680,7 +1731,7 @@ class GenerationRunner:
             agent_id = f"agent-{generation_id:04d}-{index:03d}"
             role_ordinal = role_ordinals[role]
             role_ordinals[role] += 1
-            parent_candidates = parent_context["eligible_by_role"].get(role, [])
+            parent_candidates = [] if isolated_mode else parent_context["eligible_by_role"].get(role, [])
             parent_assignment = None
             if parent_candidates:
                 parent_assignment = parent_candidates[parent_indexes[role] % len(parent_candidates)]
@@ -1774,23 +1825,30 @@ class GenerationRunner:
                 )
             current_bundle_signature = f"{role}:{variant.variant_id}:{package_policy_id}"
             used_bundle_signatures_by_role[role].add(current_bundle_signature)
-            transfer_payload = build_archive_transfer_payload(
+            (
+                package_artifacts,
+                package_memorials,
+                package_taboo_tags,
+                include_memorial_taboo_tags,
+                transfer_payload,
+            ) = self._inheritance_inputs_for_mode(
                 role=role,
                 world_name=self.config.world.name,
                 policy_id=package_policy_id,
                 source_bundle_signature=source_bundle_signature,
                 source_bundle_state=source_bundle_state,
-                artifacts=parent_artifacts,
-                memorials=parent_memorials,
-                taboo_tags=inherited_taboo_tags,
+                parent_artifacts=parent_artifacts,
+                parent_memorials=parent_memorials,
+                inherited_taboo_tags=inherited_taboo_tags,
             )
             inherited = assemble_inheritance_package(
-                artifacts=parent_artifacts,
-                memorials=parent_memorials,
+                artifacts=package_artifacts,
+                memorials=package_memorials,
                 artifact_limit=self.config.inheritance.artifact_summaries_per_agent,
                 memorial_limit=self.config.inheritance.memorials_per_agent,
                 policy_id=package_policy_id,
-                extra_taboo_tags=inherited_taboo_tags,
+                extra_taboo_tags=package_taboo_tags,
+                include_memorial_taboo_tags=include_memorial_taboo_tags,
                 transfer_payload=transfer_payload,
             )
             prompt_bundle = materialize_prompt_bundle(
@@ -1837,7 +1895,9 @@ class GenerationRunner:
                     "role": role,
                     "parent_lineage_ids": parent_lineage_ids,
                     "inheritance_source_agent_id": None if parent_agent is None else parent_agent.agent_id,
-                    "inheritance_source_generation_id": parent_context["previous_generation_id"],
+                    "inheritance_source_generation_id": (
+                        None if parent_agent is None else parent_context["previous_generation_id"]
+                    ),
                     "inheritance_source_bundle_signature": source_bundle_signature,
                     "inheritance_source_bundle_preserved": False if parent_assignment is None else parent_assignment.get("bundle_preserved", False),
                     "inheritance_source_bundle_reason": None if parent_assignment is None else parent_assignment.get("bundle_preservation_reason"),
@@ -1869,6 +1929,7 @@ class GenerationRunner:
                     "transfer_payload_source_success_rate": round(float(inherited.transfer_success_rate), 4),
                     "lineage_taboo_tags": parent_taboo_tags,
                     "registry_taboo_tags": registry_taboo_tags,
+                    "experiment_mode": self._experiment_mode(),
                     "inherited_artifact_ids": inherited.artifact_ids,
                     "inherited_memorial_ids": inherited.memorial_ids,
                     "taboo_tags": inherited.taboo_tags,
@@ -2563,6 +2624,7 @@ class GenerationRunner:
             if int(previous_cooldown_streak_by_role.get(role, 0)) > 0
         ]
         selection_summary = {
+            "experiment_mode": self._experiment_mode(),
             "eligible": sum(decision.eligible for decision in augmented_selection),
             "propagation_blocked": sum(decision.propagation_blocked for decision in augmented_selection),
             "review_only": sum(decision.quarantine_status == QUARANTINE_REVIEW for decision in augmented_selection),
@@ -2785,6 +2847,7 @@ class GenerationRunner:
         return {
             "generation_id": generation_id,
             "previous_generation_id": previous_generation_id,
+            "experiment_mode": self._experiment_mode(),
             "total_agents": len(agents),
             "total_artifacts": len(artifacts),
             "total_events": total_events,
@@ -2820,6 +2883,7 @@ class GenerationRunner:
         lines = [
             f"# Generation {summary['generation_id']}",
             "",
+            f"- experiment_mode: {summary.get('experiment_mode', EXPERIMENT_MODE_INHERITANCE_ON)}",
             f"- total_agents: {summary['total_agents']}",
             f"- total_artifacts: {summary['total_artifacts']}",
             f"- total_events: {summary['total_events']}",

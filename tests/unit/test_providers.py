@@ -192,3 +192,50 @@ def test_archive_transfer_payload_backs_off_when_context_is_stable() -> None:
     assert response.usage_metadata["transfer_payload_trigger_matched"] is False
     assert response.usage_metadata["transfer_payload_backoff_active"] is True
     assert response.usage_metadata["transfer_payload_misapplied"] is False
+
+
+def test_generation_seed_can_shift_mock_provider_behavior_when_unprotected() -> None:
+    provider = MockProvider(seed_sensitive=True)
+    seed_11 = provider.complete(
+        system="role prompt",
+        user="world brief",
+        metadata={
+            "behavior": "honest",
+            "role": "citizen",
+            "generation_seed": 11,
+            "episode_index": 0,
+            "turn_index": 0,
+            "preferred_action": "propose_fact",
+            "task": "bounded task",
+            "notebook_summary": "The notebook is thin and unresolved.",
+            "available_citations": [],
+            "inheritance": {
+                "artifact_summaries": [],
+                "memorial_lessons": [],
+                "taboo_tags": [],
+            },
+        },
+    )
+    seed_12 = provider.complete(
+        system="role prompt",
+        user="world brief",
+        metadata={
+            "behavior": "honest",
+            "role": "citizen",
+            "generation_seed": 12,
+            "episode_index": 0,
+            "turn_index": 0,
+            "preferred_action": "propose_fact",
+            "task": "bounded task",
+            "notebook_summary": "The notebook is thin and unresolved.",
+            "available_citations": [],
+            "inheritance": {
+                "artifact_summaries": [],
+                "memorial_lessons": [],
+                "taboo_tags": [],
+            },
+        },
+    )
+
+    assert seed_11.raw_text != seed_12.raw_text
+    assert seed_11.usage_metadata["seed_profile"] != seed_12.usage_metadata["seed_profile"]
