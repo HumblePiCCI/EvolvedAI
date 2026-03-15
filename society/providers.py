@@ -18,12 +18,112 @@ class LLMProvider(Protocol):
 class MockProvider:
     """Deterministic prompt-only provider for tests and local replay."""
 
-    def __init__(self, model: str = "mock-social-sim") -> None:
+    def __init__(self, model: str = "mock-social-sim", *, seed_sensitive: bool = False) -> None:
         self.model = model
+        self.seed_sensitive = seed_sensitive
         self.request_count = 0
 
     def name(self) -> str:
         return "mock"
+
+    def _seed_profile(self, metadata: dict[str, Any]) -> str | None:
+        if not self.seed_sensitive:
+            return None
+        generation_seed = metadata.get("generation_seed")
+        if generation_seed is None:
+            return None
+        signal = (
+            int(generation_seed) * 31
+            + sum(ord(ch) for ch in str(metadata.get("role", "")))
+            + sum(ord(ch) for ch in str(metadata.get("prompt_variant_id", "baseline")))
+            + sum(ord(ch) for ch in str(metadata.get("package_policy_id", "balanced")))
+            + 7 * int(metadata.get("episode_index", 0))
+            + 3 * int(metadata.get("turn_index", 0))
+        )
+        profiles = (
+            "steady",
+            "cautious_evidence",
+            "correction_oriented",
+            "assertive_overreach",
+            "thin_support_bluff",
+            "steady",
+        )
+        return profiles[signal % len(profiles)]
+
+    def _apply_seed_profile(
+        self,
+        *,
+        fields: dict[str, str],
+        metadata: dict[str, Any],
+        behavior: str,
+        taboo_tags: set[str],
+        cautionary_guidance: bool,
+        transfer_payload_active: bool,
+        citations_list: list[str],
+    ) -> tuple[dict[str, str], str | None, bool]:
+        profile = self._seed_profile(metadata)
+        if profile is None:
+            return fields, None, False
+
+        protected = bool(taboo_tags or cautionary_guidance or transfer_payload_active)
+        open_feedback = bool(metadata.get("open_corrections", []) or metadata.get("open_clarifications", []))
+        role = str(metadata.get("role", "citizen"))
+        preferred_action = str(metadata.get("preferred_action", "add_note"))
+
+        if profile == "cautious_evidence" and behavior in {
+            "honest",
+            "self_correcting",
+            "memorial_guarded",
+            "diversified",
+            "transfer_lifted",
+        }:
+            adjusted = dict(fields)
+            adjusted["action"] = "cite_artifact" if citations_list else "request_clarification"
+            adjusted["confidence"] = "0.49"
+            adjusted["uncertainty"] = "medium and explicit because the evidence should stay narrower than the current claim."
+            adjusted["next_step"] = "Anchor the update to the narrowest artifact-backed claim before widening anything else."
+            return adjusted, profile, True
+
+        if profile == "correction_oriented" and open_feedback and preferred_action not in {
+            "respond_to_correction",
+            "retract_claim",
+        }:
+            adjusted = dict(fields)
+            adjusted["action"] = "respond_to_correction" if role != "judge" else "request_clarification"
+            adjusted["claim"] = "Before adding anything new, I should close the targeted feedback loop on the notebook."
+            adjusted["uncertainty"] = "medium and explicit because the unresolved correction could still change the narrowed claim."
+            adjusted["confidence"] = "0.53"
+            adjusted["next_step"] = "Resolve the targeted correction or clarification first, then return to the broader notebook update."
+            return adjusted, profile, True
+
+        if profile == "assertive_overreach" and not protected and behavior in {
+            "honest",
+            "self_correcting",
+            "diversified",
+        }:
+            adjusted = dict(fields)
+            adjusted["confidence"] = "0.89"
+            adjusted["uncertainty"] = "low"
+            adjusted["claim"] = adjusted["claim"] + " This is almost certainly correct."
+            adjusted["next_step"] = "Treat the claim as settled."
+            return adjusted, profile, True
+
+        if (
+            profile == "thin_support_bluff"
+            and not protected
+            and not citations_list
+            and behavior in {"honest", "self_correcting"}
+        ):
+            adjusted = dict(fields)
+            adjusted["action"] = "propose_fact"
+            adjusted["confidence"] = "0.9"
+            adjusted["uncertainty"] = "low"
+            adjusted["evidence"] = "none."
+            adjusted["claim"] = "This is almost certainly correct even though the notebook support is still thin."
+            adjusted["next_step"] = "Treat the claim as settled."
+            return adjusted, profile, True
+
+        return fields, profile, False
 
     def _transfer_payload_signals(self, metadata: dict[str, Any]) -> set[str]:
         signals: set[str] = set()
@@ -82,6 +182,8 @@ class MockProvider:
                 "transfer_payload_source_bundle_signature": response_metadata.get(
                     "transfer_payload_source_bundle_signature"
                 ),
+                "seed_profile": response_metadata.get("seed_profile"),
+                "seed_profile_applied": bool(response_metadata.get("seed_profile_applied", False)),
             },
             model_name=self.model,
             provider_name=self.name(),
@@ -439,6 +541,16 @@ class MockProvider:
                 "next_step": "Add one bounded note and request clarification on the unresolved gap.",
             }
 
+        fields, seed_profile, seed_profile_applied = self._apply_seed_profile(
+            fields=fields,
+            metadata=metadata,
+            behavior=behavior,
+            taboo_tags=taboo_tags,
+            cautionary_guidance=bool(cautionary_guidance),
+            transfer_payload_active=transfer_payload_active,
+            citations_list=citations_list,
+        )
+
         return (
             f"Action: {fields['action']}\n"
             f"Claim: {fields['claim']}\n"
@@ -458,10 +570,12 @@ class MockProvider:
             "transfer_payload_trigger_reasons": matched_transfer_triggers,
             "transfer_payload_backoff_reasons": active_transfer_backoffs,
             "transfer_payload_source_bundle_signature": transfer_source_bundle_signature,
+            "seed_profile": seed_profile,
+            "seed_profile_applied": seed_profile_applied,
         }
 
 
-def build_provider(name: str, model: str) -> LLMProvider:
+def build_provider(name: str, model: str, *, seed_sensitive: bool = False) -> LLMProvider:
     if name == "mock":
-        return MockProvider(model=model)
+        return MockProvider(model=model, seed_sensitive=seed_sensitive)
     raise ValueError(f"Unsupported provider '{name}' in Phase 0.5 bootstrap")

@@ -1503,6 +1503,7 @@ class GenerationRunner:
                     available_citations = [artifact.artifact_id for artifact in all_artifacts]
                     result = self.lifespan.run_step(
                         generation_id=generation_id,
+                        generation_seed=generation_seed,
                         episode_index=episode_index,
                         agent=agent,
                         prompt=self.prompt_bundles_by_agent[agent.agent_id],

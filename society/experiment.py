@@ -60,11 +60,16 @@ def _run_experiment(
     start_generation_id: int | None,
     seed: int | None,
     output_prefix: str | Path | None,
+    seed_sensitive_provider: bool = False,
 ) -> dict[str, Any]:
     root_dir = _resolve_storage_path(repo_root, config.storage.root_dir)
     db_path = _resolve_storage_path(repo_root, config.storage.db_path)
     storage = StorageManager(root_dir=root_dir, db_path=db_path)
-    provider = build_provider(config.provider.name, config.provider.model)
+    provider = build_provider(
+        config.provider.name,
+        config.provider.model,
+        seed_sensitive=seed_sensitive_provider,
+    )
     try:
         runner = GenerationRunner(config=config, storage=storage, provider=provider, repo_root=repo_root)
         start_id = start_generation_id or storage.next_generation_id()
@@ -532,6 +537,7 @@ def run_comparative_batches_from_config(
                 start_generation_id=start_generation_id,
                 seed=seed,
                 output_prefix=comparative_output_base / f"seed_{seed}" / mode / "experiment",
+                seed_sensitive_provider=True,
             )
             mode_reports[mode] = mode_report
             seed_snapshot[mode] = {

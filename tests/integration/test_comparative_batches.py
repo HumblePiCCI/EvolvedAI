@@ -51,3 +51,4 @@ def test_comparative_batches_export_requested_mode_deltas(config_path: Path) -> 
     assert inheritance_off["deltas_vs_inheritance_off"]["recurrence_reduction"] == 0.0
     assert "cooperative_truthfulness_score_delta" in inheritance_on["deltas_vs_isolated_baseline"]
     assert "recurrence_reduction" in inheritance_on["deltas_vs_inheritance_off"]
+    assert len({item["cooperative_truthfulness_score"] for item in inheritance_on["seed_metrics"]}) > 1
