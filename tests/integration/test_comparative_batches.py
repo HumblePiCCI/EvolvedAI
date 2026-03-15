@@ -26,6 +26,9 @@ def test_comparative_batches_export_requested_mode_deltas(config_path: Path) -> 
         "taboo_registry_only",
         "isolated_baseline",
     ]
+    assert report["provider"]["name"] == "mock"
+    assert report["provider"]["seed_sensitive_provider"] is True
+    assert report["statistical_method"] == "seed-level mean with two-sided 95% t-intervals"
     assert Path(report["exports"]["json_path"]).exists()
     assert Path(report["exports"]["markdown_path"]).exists()
     assert len(report["mode_summaries"]) == 5
@@ -43,12 +46,19 @@ def test_comparative_batches_export_requested_mode_deltas(config_path: Path) -> 
         assert "hidden_eval_failure_rate" in item["batch_means"]
         assert "failure_recurrence_rate" in item["batch_means"]
         assert "lineage_diffusion_index" in item["batch_means"]
+        assert "batch_bands" in item
+        assert item["batch_bands"]["cooperative_truthfulness_score"]["count"] == 2
+        assert "ci95_low" in item["batch_bands"]["cooperative_truthfulness_score"]
         assert "deltas_vs_isolated_baseline" in item
+        assert "delta_bands_vs_isolated_baseline" in item
         assert "deltas_vs_inheritance_off" in item
+        assert "delta_bands_vs_inheritance_off" in item
 
     assert isolated["deltas_vs_isolated_baseline"]["cooperative_truthfulness_score_delta"] == 0.0
     assert isolated["deltas_vs_isolated_baseline"]["hidden_eval_failure_rate_reduction"] == 0.0
+    assert isolated["delta_bands_vs_isolated_baseline"]["cooperative_truthfulness_score_delta"]["mean"] == 0.0
     assert inheritance_off["deltas_vs_inheritance_off"]["recurrence_reduction"] == 0.0
+    assert inheritance_off["delta_bands_vs_inheritance_off"]["recurrence_reduction"]["mean"] == 0.0
     assert "cooperative_truthfulness_score_delta" in inheritance_on["deltas_vs_isolated_baseline"]
     assert "recurrence_reduction" in inheritance_on["deltas_vs_inheritance_off"]
     assert len({item["cooperative_truthfulness_score"] for item in inheritance_on["seed_metrics"]}) > 1

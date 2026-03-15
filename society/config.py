@@ -21,6 +21,11 @@ class StrictConfigModel(BaseModel):
 class ProviderConfig(StrictConfigModel):
     name: str = "mock"
     model: str = "mock-social-sim"
+    api_key_env: str = "OPENAI_API_KEY"
+    base_url: str | None = None
+    timeout_seconds: float = Field(default=60.0, gt=0.0)
+    reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
+    max_output_tokens: int | None = Field(default=None, gt=0)
 
 
 class GenerationSettings(StrictConfigModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import statistics
 from pathlib import Path
 from typing import Any, cast
@@ -21,6 +22,39 @@ COMPARATIVE_BATCH_KEYS = (
     "strategy_drift_rate",
     "lineage_diffusion_index",
 )
+
+T_CRITICAL_95_BY_DF = {
+    1: 12.706,
+    2: 4.303,
+    3: 3.182,
+    4: 2.776,
+    5: 2.571,
+    6: 2.447,
+    7: 2.365,
+    8: 2.306,
+    9: 2.262,
+    10: 2.228,
+    11: 2.201,
+    12: 2.179,
+    13: 2.16,
+    14: 2.145,
+    15: 2.131,
+    16: 2.12,
+    17: 2.11,
+    18: 2.101,
+    19: 2.093,
+    20: 2.086,
+    21: 2.08,
+    22: 2.074,
+    23: 2.069,
+    24: 2.064,
+    25: 2.06,
+    26: 2.056,
+    27: 2.052,
+    28: 2.048,
+    29: 2.045,
+    30: 2.042,
+}
 
 
 def _resolve_storage_path(repo_root: Path, value: str) -> Path:
@@ -52,6 +86,47 @@ def _config_with_mode_and_storage(
     return AutoCivConfig.model_validate(payload)
 
 
+def _config_with_provider_overrides(
+    config: AutoCivConfig,
+    *,
+    provider_name: str | None = None,
+    provider_model: str | None = None,
+    provider_base_url: str | None = None,
+    provider_timeout_seconds: float | None = None,
+    provider_reasoning_effort: str | None = None,
+    provider_max_output_tokens: int | None = None,
+) -> AutoCivConfig:
+    if all(
+        value is None
+        for value in (
+            provider_name,
+            provider_model,
+            provider_base_url,
+            provider_timeout_seconds,
+            provider_reasoning_effort,
+            provider_max_output_tokens,
+        )
+    ):
+        return config
+
+    payload = config.model_dump(mode="json")
+    provider_payload = payload.get("provider", {})
+    if provider_name is not None:
+        provider_payload["name"] = provider_name
+    if provider_model is not None:
+        provider_payload["model"] = provider_model
+    if provider_base_url is not None:
+        provider_payload["base_url"] = provider_base_url
+    if provider_timeout_seconds is not None:
+        provider_payload["timeout_seconds"] = provider_timeout_seconds
+    if provider_reasoning_effort is not None:
+        provider_payload["reasoning_effort"] = provider_reasoning_effort
+    if provider_max_output_tokens is not None:
+        provider_payload["max_output_tokens"] = provider_max_output_tokens
+    payload["provider"] = provider_payload
+    return AutoCivConfig.model_validate(payload)
+
+
 def _run_experiment(
     *,
     config: AutoCivConfig,
@@ -69,6 +144,11 @@ def _run_experiment(
         config.provider.name,
         config.provider.model,
         seed_sensitive=seed_sensitive_provider,
+        api_key_env=config.provider.api_key_env,
+        base_url=config.provider.base_url,
+        timeout_seconds=config.provider.timeout_seconds,
+        reasoning_effort=config.provider.reasoning_effort,
+        max_output_tokens=config.provider.max_output_tokens,
     )
     try:
         runner = GenerationRunner(config=config, storage=storage, provider=provider, repo_root=repo_root)
@@ -97,6 +177,95 @@ def _run_experiment(
 
 def _mean(values: list[float]) -> float:
     return round(statistics.fmean(values), 4) if values else 0.0
+
+
+def _confidence_multiplier_95(sample_size: int) -> float:
+    if sample_size <= 1:
+        return 0.0
+    degrees_of_freedom = sample_size - 1
+    return T_CRITICAL_95_BY_DF.get(degrees_of_freedom, 1.96)
+
+
+def _metric_band(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {
+            "count": 0,
+            "mean": 0.0,
+            "median": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "sample_variance": 0.0,
+            "sample_stddev": 0.0,
+            "standard_error": 0.0,
+            "ci95_low": 0.0,
+            "ci95_high": 0.0,
+            "ci95_margin": 0.0,
+        }
+
+    mean_value = statistics.fmean(values)
+    median_value = statistics.median(values)
+    minimum = min(values)
+    maximum = max(values)
+    sample_variance = statistics.variance(values) if len(values) > 1 else 0.0
+    sample_stddev = statistics.stdev(values) if len(values) > 1 else 0.0
+    standard_error = sample_stddev / math.sqrt(len(values)) if len(values) > 1 else 0.0
+    ci95_margin = _confidence_multiplier_95(len(values)) * standard_error if len(values) > 1 else 0.0
+    return {
+        "count": len(values),
+        "mean": round(mean_value, 4),
+        "median": round(float(median_value), 4),
+        "min": round(minimum, 4),
+        "max": round(maximum, 4),
+        "sample_variance": round(sample_variance, 6),
+        "sample_stddev": round(sample_stddev, 6),
+        "standard_error": round(standard_error, 6),
+        "ci95_low": round(mean_value - ci95_margin, 4),
+        "ci95_high": round(mean_value + ci95_margin, 4),
+        "ci95_margin": round(ci95_margin, 4),
+    }
+
+
+def _metric_bands(metric_rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    if not metric_rows:
+        return {}
+    keys = [key for key, value in metric_rows[0].items() if isinstance(value, (int, float))]
+    return {
+        key: _metric_band([float(item[key]) for item in metric_rows])
+        for key in keys
+    }
+
+
+def _delta_bands(
+    seed_metrics: list[dict[str, Any]],
+    baseline_seed_metrics: list[dict[str, Any]],
+    delta_fields: dict[str, tuple[str, str]],
+) -> tuple[dict[str, float], dict[str, dict[str, Any]]]:
+    baseline_by_seed = {int(item["seed"]): item for item in baseline_seed_metrics}
+    series: dict[str, list[float]] = {field: [] for field in delta_fields}
+    for item in seed_metrics:
+        seed = int(item["seed"])
+        baseline = baseline_by_seed[seed]
+        for field, (direction, metric_key) in delta_fields.items():
+            value = float(item[metric_key])
+            baseline_value = float(baseline[metric_key])
+            delta = value - baseline_value if direction == "mode_minus_baseline" else baseline_value - value
+            series[field].append(delta)
+
+    means = {field: _metric_band(values)["mean"] for field, values in series.items()}
+    bands = {field: _metric_band(values) for field, values in series.items()}
+    return means, bands
+
+
+def _provider_snapshot(config: AutoCivConfig, *, seed_sensitive_provider: bool) -> dict[str, Any]:
+    return {
+        "name": config.provider.name,
+        "model": config.provider.model,
+        "base_url": config.provider.base_url,
+        "timeout_seconds": config.provider.timeout_seconds,
+        "reasoning_effort": config.provider.reasoning_effort,
+        "max_output_tokens": config.provider.max_output_tokens,
+        "seed_sensitive_provider": seed_sensitive_provider,
+    }
 
 
 def _report_metric_snapshot(report: dict[str, Any]) -> dict[str, float]:
@@ -176,87 +345,51 @@ def _comparative_batch_summary(
                 "final_lineage_diffusion_index",
             )
         }
+        batch_bands = _metric_bands(seed_metrics)
         summary = {
             "mode": mode,
             "seed_count": len(seed_metrics),
             "seed_metrics": seed_metrics,
             "batch_means": batch_means,
+            "batch_bands": batch_bands,
         }
         summaries.append(summary)
         by_mode[mode] = summary
 
     isolated_baseline_summary = by_mode.get("isolated_baseline")
-    isolated_baseline = (
-        None
-        if isolated_baseline_summary is None
-        else cast(dict[str, float], isolated_baseline_summary["batch_means"])
-    )
     inheritance_off_summary = by_mode.get("inheritance_off")
-    inheritance_off_baseline = (
-        None
-        if inheritance_off_summary is None
-        else cast(dict[str, float], inheritance_off_summary["batch_means"])
-    )
     for summary in summaries:
-        batch = cast(dict[str, float], summary["batch_means"])
-        if isolated_baseline is not None:
-            summary["deltas_vs_isolated_baseline"] = {
-                "cooperative_truthfulness_score_delta": round(
-                    batch["cooperative_truthfulness_score"] - isolated_baseline["cooperative_truthfulness_score"],
-                    4,
-                ),
-                "correction_acceptance_average_delta": round(
-                    batch["correction_acceptance_average"] - isolated_baseline["correction_acceptance_average"],
-                    4,
-                ),
-                "hidden_eval_failure_rate_delta": round(
-                    batch["hidden_eval_failure_rate"] - isolated_baseline["hidden_eval_failure_rate"],
-                    4,
-                ),
-                "hidden_eval_failure_rate_reduction": round(
-                    isolated_baseline["hidden_eval_failure_rate"] - batch["hidden_eval_failure_rate"],
-                    4,
-                ),
-                "strategy_drift_rate_delta": round(
-                    batch["strategy_drift_rate"] - isolated_baseline["strategy_drift_rate"],
-                    4,
-                ),
-                "lineage_diffusion_index_delta": round(
-                    batch["lineage_diffusion_index"] - isolated_baseline["lineage_diffusion_index"],
-                    4,
-                ),
-            }
-        if inheritance_off_baseline is not None:
-            summary["deltas_vs_inheritance_off"] = {
-                "failure_recurrence_rate_delta": round(
-                    batch["failure_recurrence_rate"] - inheritance_off_baseline["failure_recurrence_rate"],
-                    4,
-                ),
-                "recurrence_reduction": round(
-                    inheritance_off_baseline["failure_recurrence_rate"] - batch["failure_recurrence_rate"],
-                    4,
-                ),
-                "cooperative_truthfulness_score_delta": round(
-                    batch["cooperative_truthfulness_score"] - inheritance_off_baseline["cooperative_truthfulness_score"],
-                    4,
-                ),
-                "correction_acceptance_average_delta": round(
-                    batch["correction_acceptance_average"] - inheritance_off_baseline["correction_acceptance_average"],
-                    4,
-                ),
-                "hidden_eval_failure_rate_reduction": round(
-                    inheritance_off_baseline["hidden_eval_failure_rate"] - batch["hidden_eval_failure_rate"],
-                    4,
-                ),
-                "strategy_drift_rate_delta": round(
-                    batch["strategy_drift_rate"] - inheritance_off_baseline["strategy_drift_rate"],
-                    4,
-                ),
-                "lineage_diffusion_index_delta": round(
-                    batch["lineage_diffusion_index"] - inheritance_off_baseline["lineage_diffusion_index"],
-                    4,
-                ),
-            }
+        if isolated_baseline_summary is not None:
+            deltas, bands = _delta_bands(
+                cast(list[dict[str, Any]], summary["seed_metrics"]),
+                cast(list[dict[str, Any]], isolated_baseline_summary["seed_metrics"]),
+                {
+                    "cooperative_truthfulness_score_delta": ("mode_minus_baseline", "cooperative_truthfulness_score"),
+                    "correction_acceptance_average_delta": ("mode_minus_baseline", "correction_acceptance_average"),
+                    "hidden_eval_failure_rate_delta": ("mode_minus_baseline", "hidden_eval_failure_rate"),
+                    "hidden_eval_failure_rate_reduction": ("baseline_minus_mode", "hidden_eval_failure_rate"),
+                    "strategy_drift_rate_delta": ("mode_minus_baseline", "strategy_drift_rate"),
+                    "lineage_diffusion_index_delta": ("mode_minus_baseline", "lineage_diffusion_index"),
+                },
+            )
+            summary["deltas_vs_isolated_baseline"] = deltas
+            summary["delta_bands_vs_isolated_baseline"] = bands
+        if inheritance_off_summary is not None:
+            deltas, bands = _delta_bands(
+                cast(list[dict[str, Any]], summary["seed_metrics"]),
+                cast(list[dict[str, Any]], inheritance_off_summary["seed_metrics"]),
+                {
+                    "failure_recurrence_rate_delta": ("mode_minus_baseline", "failure_recurrence_rate"),
+                    "recurrence_reduction": ("baseline_minus_mode", "failure_recurrence_rate"),
+                    "cooperative_truthfulness_score_delta": ("mode_minus_baseline", "cooperative_truthfulness_score"),
+                    "correction_acceptance_average_delta": ("mode_minus_baseline", "correction_acceptance_average"),
+                    "hidden_eval_failure_rate_reduction": ("baseline_minus_mode", "hidden_eval_failure_rate"),
+                    "strategy_drift_rate_delta": ("mode_minus_baseline", "strategy_drift_rate"),
+                    "lineage_diffusion_index_delta": ("mode_minus_baseline", "lineage_diffusion_index"),
+                },
+            )
+            summary["deltas_vs_inheritance_off"] = deltas
+            summary["delta_bands_vs_inheritance_off"] = bands
     return summaries
 
 
@@ -347,6 +480,8 @@ def render_comparative_batches_report(report: dict[str, Any]) -> str:
         f"# Comparative Batches {report['generation_span'][0]}-{report['generation_span'][1]}",
         "",
         f"- seeds: {', '.join(str(seed) for seed in report['seeds'])}",
+        f"- provider: {report['provider']['name']}:{report['provider']['model']}",
+        f"- interval_method: {report['statistical_method']}",
         "",
         "## Metric Definitions",
         "",
@@ -361,6 +496,7 @@ def render_comparative_batches_report(report: dict[str, Any]) -> str:
     ]
     for item in report["mode_summaries"]:
         batch = item["batch_means"]
+        batch_bands = item["batch_bands"]
         lines.append(
             f"- {item['mode']}: recurrence_rate={batch['failure_recurrence_rate']} "
             f"cooperative_truthfulness={batch['cooperative_truthfulness_score']} "
@@ -369,7 +505,17 @@ def render_comparative_batches_report(report: dict[str, Any]) -> str:
             f"strategy_drift_rate={batch['strategy_drift_rate']} "
             f"lineage_diffusion_index={batch['lineage_diffusion_index']}"
         )
+        lines.append(
+            "  95%_bands: "
+            f"recurrence=[{batch_bands['failure_recurrence_rate']['ci95_low']}, {batch_bands['failure_recurrence_rate']['ci95_high']}] "
+            f"truthfulness=[{batch_bands['cooperative_truthfulness_score']['ci95_low']}, {batch_bands['cooperative_truthfulness_score']['ci95_high']}] "
+            f"correction=[{batch_bands['correction_acceptance_average']['ci95_low']}, {batch_bands['correction_acceptance_average']['ci95_high']}] "
+            f"hidden_failures=[{batch_bands['hidden_eval_failure_rate']['ci95_low']}, {batch_bands['hidden_eval_failure_rate']['ci95_high']}] "
+            f"drift=[{batch_bands['strategy_drift_rate']['ci95_low']}, {batch_bands['strategy_drift_rate']['ci95_high']}] "
+            f"diffusion=[{batch_bands['lineage_diffusion_index']['ci95_low']}, {batch_bands['lineage_diffusion_index']['ci95_high']}]"
+        )
         isolated = item.get("deltas_vs_isolated_baseline")
+        isolated_bands = item.get("delta_bands_vs_isolated_baseline")
         if isolated is not None:
             lines.append(
                 "  vs_isolated_baseline: "
@@ -380,7 +526,17 @@ def render_comparative_batches_report(report: dict[str, Any]) -> str:
                 f"strategy_drift_rate={isolated['strategy_drift_rate_delta']} "
                 f"lineage_diffusion_index={isolated['lineage_diffusion_index_delta']}"
             )
+        if isolated_bands is not None:
+            lines.append(
+                "  vs_isolated_95%_bands: "
+                f"truthfulness=[{isolated_bands['cooperative_truthfulness_score_delta']['ci95_low']}, {isolated_bands['cooperative_truthfulness_score_delta']['ci95_high']}] "
+                f"correction=[{isolated_bands['correction_acceptance_average_delta']['ci95_low']}, {isolated_bands['correction_acceptance_average_delta']['ci95_high']}] "
+                f"hidden_reduction=[{isolated_bands['hidden_eval_failure_rate_reduction']['ci95_low']}, {isolated_bands['hidden_eval_failure_rate_reduction']['ci95_high']}] "
+                f"drift=[{isolated_bands['strategy_drift_rate_delta']['ci95_low']}, {isolated_bands['strategy_drift_rate_delta']['ci95_high']}] "
+                f"diffusion=[{isolated_bands['lineage_diffusion_index_delta']['ci95_low']}, {isolated_bands['lineage_diffusion_index_delta']['ci95_high']}]"
+            )
         inheritance_off = item.get("deltas_vs_inheritance_off")
+        inheritance_off_bands = item.get("delta_bands_vs_inheritance_off")
         if inheritance_off is not None:
             lines.append(
                 "  vs_inheritance_off: "
@@ -391,6 +547,16 @@ def render_comparative_batches_report(report: dict[str, Any]) -> str:
                 f"hidden_eval_failure_rate_reduction={inheritance_off['hidden_eval_failure_rate_reduction']} "
                 f"strategy_drift_rate={inheritance_off['strategy_drift_rate_delta']} "
                 f"lineage_diffusion_index={inheritance_off['lineage_diffusion_index_delta']}"
+            )
+        if inheritance_off_bands is not None:
+            lines.append(
+                "  vs_inheritance_off_95%_bands: "
+                f"recurrence_reduction=[{inheritance_off_bands['recurrence_reduction']['ci95_low']}, {inheritance_off_bands['recurrence_reduction']['ci95_high']}] "
+                f"truthfulness=[{inheritance_off_bands['cooperative_truthfulness_score_delta']['ci95_low']}, {inheritance_off_bands['cooperative_truthfulness_score_delta']['ci95_high']}] "
+                f"correction=[{inheritance_off_bands['correction_acceptance_average_delta']['ci95_low']}, {inheritance_off_bands['correction_acceptance_average_delta']['ci95_high']}] "
+                f"hidden_reduction=[{inheritance_off_bands['hidden_eval_failure_rate_reduction']['ci95_low']}, {inheritance_off_bands['hidden_eval_failure_rate_reduction']['ci95_high']}] "
+                f"drift=[{inheritance_off_bands['strategy_drift_rate_delta']['ci95_low']}, {inheritance_off_bands['strategy_drift_rate_delta']['ci95_high']}] "
+                f"diffusion=[{inheritance_off_bands['lineage_diffusion_index_delta']['ci95_low']}, {inheritance_off_bands['lineage_diffusion_index_delta']['ci95_high']}]"
             )
     return "\n".join(lines) + "\n"
 
@@ -404,6 +570,12 @@ def run_experiment_from_config(
     seed: int | None = None,
     output_prefix: str | None = None,
     mode: str | None = None,
+    provider_name: str | None = None,
+    provider_model: str | None = None,
+    provider_base_url: str | None = None,
+    provider_timeout_seconds: float | None = None,
+    provider_reasoning_effort: str | None = None,
+    provider_max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     if generations <= 0:
         raise ValueError("generations must be greater than zero")
@@ -411,6 +583,15 @@ def run_experiment_from_config(
     repo_root = Path(repo_root)
     resolved_config_path = repo_root / config_path if not Path(config_path).is_absolute() else Path(config_path)
     config = load_config(resolved_config_path)
+    config = _config_with_provider_overrides(
+        config,
+        provider_name=provider_name,
+        provider_model=provider_model,
+        provider_base_url=provider_base_url,
+        provider_timeout_seconds=provider_timeout_seconds,
+        provider_reasoning_effort=provider_reasoning_effort,
+        provider_max_output_tokens=provider_max_output_tokens,
+    )
     if mode is not None:
         root_dir = _resolve_storage_path(repo_root, config.storage.root_dir)
         db_path = _resolve_storage_path(repo_root, config.storage.db_path)
@@ -434,6 +615,12 @@ def run_hypothesis_suite_from_config(
     start_generation_id: int | None = None,
     seed: int | None = None,
     output_prefix: str | None = None,
+    provider_name: str | None = None,
+    provider_model: str | None = None,
+    provider_base_url: str | None = None,
+    provider_timeout_seconds: float | None = None,
+    provider_reasoning_effort: str | None = None,
+    provider_max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     if generations <= 0:
         raise ValueError("generations must be greater than zero")
@@ -441,6 +628,15 @@ def run_hypothesis_suite_from_config(
     repo_root = Path(repo_root)
     resolved_config_path = repo_root / config_path if not Path(config_path).is_absolute() else Path(config_path)
     base_config = load_config(resolved_config_path)
+    base_config = _config_with_provider_overrides(
+        base_config,
+        provider_name=provider_name,
+        provider_model=provider_model,
+        provider_base_url=provider_base_url,
+        provider_timeout_seconds=provider_timeout_seconds,
+        provider_reasoning_effort=provider_reasoning_effort,
+        provider_max_output_tokens=provider_max_output_tokens,
+    )
     selected_modes = list(modes or EXPERIMENT_MODES)
     base_root_dir = _resolve_storage_path(repo_root, base_config.storage.root_dir)
     suite_output_base = _resolve_output_base(repo_root, base_root_dir, output_prefix, "hypothesis_suite")
@@ -470,6 +666,7 @@ def run_hypothesis_suite_from_config(
     suite_report = {
         "modes": selected_modes,
         "generation_span": generation_span,
+        "provider": _provider_snapshot(base_config, seed_sensitive_provider=False),
         "mode_summaries": _suite_summary(reports_by_mode),
         "reports_by_mode": reports_by_mode,
     }
@@ -499,6 +696,12 @@ def run_comparative_batches_from_config(
     modes: list[str] | None = None,
     start_generation_id: int | None = None,
     output_prefix: str | None = None,
+    provider_name: str | None = None,
+    provider_model: str | None = None,
+    provider_base_url: str | None = None,
+    provider_timeout_seconds: float | None = None,
+    provider_reasoning_effort: str | None = None,
+    provider_max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     if generations <= 0:
         raise ValueError("generations must be greater than zero")
@@ -508,6 +711,15 @@ def run_comparative_batches_from_config(
     repo_root = Path(repo_root)
     resolved_config_path = repo_root / config_path if not Path(config_path).is_absolute() else Path(config_path)
     base_config = load_config(resolved_config_path)
+    base_config = _config_with_provider_overrides(
+        base_config,
+        provider_name=provider_name,
+        provider_model=provider_model,
+        provider_base_url=provider_base_url,
+        provider_timeout_seconds=provider_timeout_seconds,
+        provider_reasoning_effort=provider_reasoning_effort,
+        provider_max_output_tokens=provider_max_output_tokens,
+    )
     selected_modes = list(modes or EXPERIMENT_MODES)
     base_root_dir = _resolve_storage_path(repo_root, base_config.storage.root_dir)
     comparative_output_base = _resolve_output_base(
@@ -556,6 +768,8 @@ def run_comparative_batches_from_config(
         "seeds": seeds,
         "modes": selected_modes,
         "generation_span": generation_span,
+        "provider": _provider_snapshot(base_config, seed_sensitive_provider=True),
+        "statistical_method": "seed-level mean with two-sided 95% t-intervals",
         "mode_summaries": _comparative_batch_summary(reports_by_seed, selected_modes),
         "seed_runs": seed_runs,
     }

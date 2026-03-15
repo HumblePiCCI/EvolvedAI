@@ -36,6 +36,22 @@ uv run python scripts/run_hypothesis_suite.py --config config/defaults.yaml --ge
 uv run python scripts/run_comparative_batches.py --config config/defaults.yaml --generations 4 --seeds 31 32 33 34 35
 ```
 
+Comparative batches now export seed-level variance and two-sided 95% confidence
+bands in both JSON and Markdown reports.
+
+Live-provider reality check:
+
+```bash
+OPENAI_API_KEY=... uv run python scripts/run_comparative_batches.py \
+  --config config/defaults.yaml \
+  --provider-name openai \
+  --provider-model gpt-5-mini \
+  --provider-reasoning-effort minimal \
+  --provider-max-output-tokens 400 \
+  --generations 2 \
+  --seeds 31
+```
+
 Available experiment modes:
 
 - `inheritance_on`

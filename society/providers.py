@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 import re
 import time
 from typing import Any, Protocol
+
+import requests
 
 from society.schemas import ProviderResponse
 
@@ -575,7 +578,135 @@ class MockProvider:
         }
 
 
-def build_provider(name: str, model: str, *, seed_sensitive: bool = False) -> LLMProvider:
+class OpenAIProvider:
+    """Minimal live provider backed by the OpenAI Responses API."""
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        api_key_env: str = "OPENAI_API_KEY",
+        base_url: str | None = None,
+        timeout_seconds: float = 60.0,
+        reasoning_effort: str | None = None,
+        max_output_tokens: int | None = None,
+    ) -> None:
+        api_key = os.environ.get(api_key_env)
+        if not api_key:
+            raise ValueError(f"Environment variable '{api_key_env}' is required for the openai provider")
+        self.model = model
+        self.api_key_env = api_key_env
+        self.base_url = (base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+        self.timeout_seconds = timeout_seconds
+        self.reasoning_effort = reasoning_effort
+        self.max_output_tokens = max_output_tokens
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+        )
+
+    def name(self) -> str:
+        return "openai"
+
+    def _extract_output_text(self, response_json: dict[str, Any]) -> str:
+        output_text = response_json.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+
+        texts: list[str] = []
+        for item in response_json.get("output", []) or []:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            for content in item.get("content", []) or []:
+                if not isinstance(content, dict):
+                    continue
+                if content.get("type") in {"output_text", "text"}:
+                    text = content.get("text")
+                    if isinstance(text, str) and text.strip():
+                        texts.append(text.strip())
+
+        if texts:
+            return "\n".join(texts)
+        output_types = [
+            item.get("type")
+            for item in response_json.get("output", []) or []
+            if isinstance(item, dict)
+        ]
+        raise ValueError(
+            "OpenAI response did not contain output text "
+            f"(status={response_json.get('status')}, "
+            f"incomplete_details={response_json.get('incomplete_details')}, "
+            f"output_types={output_types})"
+        )
+
+    def complete(self, *, system: str, user: str, metadata: dict[str, Any]) -> ProviderResponse:
+        started = time.perf_counter()
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "instructions": system,
+            "input": user,
+        }
+        if self.reasoning_effort is not None:
+            payload["reasoning"] = {"effort": self.reasoning_effort}
+        if self.max_output_tokens is not None:
+            payload["max_output_tokens"] = self.max_output_tokens
+
+        response = self.session.post(
+            f"{self.base_url}/responses",
+            json=payload,
+            timeout=self.timeout_seconds,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"OpenAI provider error {response.status_code}: {response.text[:400]}"
+            )
+        response_json = response.json()
+        raw_text = self._extract_output_text(response_json)
+        normalized = re.sub(r"\s+", " ", raw_text).strip()
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        usage = response_json.get("usage", {}) if isinstance(response_json.get("usage"), dict) else {}
+        usage_metadata = {
+            "prompt_chars": len(system) + len(user),
+            "input_tokens": usage.get("input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+            "generation_seed": metadata.get("generation_seed"),
+            "response_status": response_json.get("status"),
+        }
+        return ProviderResponse(
+            raw_text=raw_text,
+            normalized_text=normalized,
+            usage_metadata=usage_metadata,
+            model_name=str(response_json.get("model", self.model)),
+            provider_name=self.name(),
+            latency_ms=latency_ms,
+            request_id=str(response_json.get("id")) if response_json.get("id") is not None else None,
+        )
+
+
+def build_provider(
+    name: str,
+    model: str,
+    *,
+    seed_sensitive: bool = False,
+    api_key_env: str = "OPENAI_API_KEY",
+    base_url: str | None = None,
+    timeout_seconds: float = 60.0,
+    reasoning_effort: str | None = None,
+    max_output_tokens: int | None = None,
+) -> LLMProvider:
     if name == "mock":
         return MockProvider(model=model, seed_sensitive=seed_sensitive)
+    if name == "openai":
+        return OpenAIProvider(
+            model=model,
+            api_key_env=api_key_env,
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+            reasoning_effort=reasoning_effort,
+            max_output_tokens=max_output_tokens,
+        )
     raise ValueError(f"Unsupported provider '{name}' in Phase 0.5 bootstrap")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from society.providers import MockProvider
+from society.providers import MockProvider, OpenAIProvider
 
 
 def test_cautionary_memorials_shift_honest_behavior_to_guarded_mode() -> None:
@@ -239,3 +239,70 @@ def test_generation_seed_can_shift_mock_provider_behavior_when_unprotected() -> 
 
     assert seed_11.raw_text != seed_12.raw_text
     assert seed_11.usage_metadata["seed_profile"] != seed_12.usage_metadata["seed_profile"]
+
+
+def test_openai_provider_parses_responses_api_output(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    provider = OpenAIProvider(
+        model="gpt-5.4",
+        timeout_seconds=12.0,
+        reasoning_effort="low",
+        max_output_tokens=300,
+    )
+
+    class DummyResponse:
+        status_code = 200
+
+        def json(self) -> dict:
+            return {
+                "id": "resp_123",
+                "model": "gpt-5.4",
+                "status": "completed",
+                "usage": {
+                    "input_tokens": 111,
+                    "output_tokens": 37,
+                    "total_tokens": 148,
+                },
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "Action: summarize_state\nClaim: bounded claim\nUncertainty: medium\nConfidence: 0.6\nEvidence: cited\nCitations: none\nTarget: none\nNext step: keep it narrow",
+                            }
+                        ],
+                    }
+                ],
+            }
+
+    captured: dict[str, object] = {}
+
+    def fake_post(url: str, *, json: dict, timeout: float):  # type: ignore[no-untyped-def]
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return DummyResponse()
+
+    monkeypatch.setattr(provider.session, "post", fake_post)
+    response = provider.complete(
+        system="role prompt",
+        user="world brief",
+        metadata={"generation_seed": 21},
+    )
+
+    assert captured["url"] == "https://api.openai.com/v1/responses"
+    assert captured["timeout"] == 12.0
+    assert captured["json"] == {
+        "model": "gpt-5.4",
+        "instructions": "role prompt",
+        "input": "world brief",
+        "reasoning": {"effort": "low"},
+        "max_output_tokens": 300,
+    }
+    assert response.provider_name == "openai"
+    assert response.model_name == "gpt-5.4"
+    assert response.request_id == "resp_123"
+    assert response.usage_metadata["generation_seed"] == 21
+    assert response.usage_metadata["total_tokens"] == 148
+    assert response.raw_text.startswith("Action: summarize_state")

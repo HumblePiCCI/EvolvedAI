@@ -27,7 +27,15 @@ def run_generation_from_config(
         root_dir=repo_root / config.storage.root_dir,
         db_path=repo_root / config.storage.db_path,
     )
-    provider = build_provider(config.provider.name, config.provider.model)
+    provider = build_provider(
+        config.provider.name,
+        config.provider.model,
+        api_key_env=config.provider.api_key_env,
+        base_url=config.provider.base_url,
+        timeout_seconds=config.provider.timeout_seconds,
+        reasoning_effort=config.provider.reasoning_effort,
+        max_output_tokens=config.provider.max_output_tokens,
+    )
     try:
         runner = GenerationRunner(config=config, storage=storage, provider=provider, repo_root=repo_root)
         return runner.run(generation_id=generation_id, seed=seed, dry_run=dry_run)
