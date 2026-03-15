@@ -15,3 +15,6 @@ Current bootstrap scope:
 The bootstrap is intentionally narrow. It is designed to make replay, audit, and
 failure analysis cheap before any adapter or checkpoint evolution exists.
 
+Future extension work, including public volunteer participation, should preserve
+that same narrowness: bounded work units, replayability, and no uncontrolled
+distributed training. See `docs/COMMUNITY_COMPUTE.md`.
